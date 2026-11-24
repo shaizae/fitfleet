@@ -133,6 +133,20 @@ class ExperimentReport:
         summary = pd.DataFrame(rows).set_index("model")
         return summary.sort_values("best_rank")
 
+    def extra_metrics_table(self) -> pd.DataFrame:
+        """Report-only metrics (balanced accuracy, MCC, ROC AUC, median error, ...) of each model's best
+        configuration, one row per model in summary order; a metric that does not apply to a model is NaN."""
+        rows = {model: self._best_per_model[model].extra_metrics for model in self.summary.index
+                if model in self._best_per_model}
+        table = pd.DataFrame.from_dict(rows, orient="index")
+        table.index.name = "model"
+        return table.dropna(axis=1, how="all")
+
+    def _evaluated_on(self) -> str:
+        """Rows and folds the best configuration was scored on."""
+        result = self._best_per_model.get(self.best["model"])
+        return "n/a" if result is None else result.evaluation_rows()
+
     def roc_curves(self) -> dict[str, tuple[np.ndarray, np.ndarray, float]]:
         """{model: (fpr, tpr, auc)} for each model's best configuration (classification only).
         Multiclass: micro-average over the classes (one-vs-rest). Models without predict_proba are left out.
@@ -191,6 +205,10 @@ class ExperimentReport:
         yield f"  params  : {best['params'] or '(defaults)'}"
         yield f"  features: {best['n_features']} ({best['features']})"
         yield "  " + "  ".join(f"{m}={best[m]:.4f}" for m in self.metric_names)
+        extra = self._best_per_model[best["model"]].extra_metrics if best["model"] in self._best_per_model else {}
+        if extra:
+            for line in textwrap.wrap("  ".join(f"{m}={v:.4f}" for m, v in extra.items()), 110):
+                yield "  " + line
 
     def setup_lines(self) -> Iterator[str]:
         """The features, preprocessing and hyper-parameters the experiment used."""
@@ -278,13 +296,17 @@ class ExperimentReport:
                         f"{metric} ({direction})  ·  {self.created:%Y-%m-%d %H:%M}")
 
         section = "Executive Summary"
+        extras = self.extra_metrics_table()
+        best_extra = extras.loc[best["model"]].dropna() if best["model"] in extras.index else pd.Series(dtype=float)
         pdf.key_values(section, [
             ("best configuration", f"{best['model']}  (rank #1)"),
             (f"{metric}", f"{best[metric]:.4f}  ({direction})"),
             ("all metrics", ", ".join(f"{m} {best[m]:.4f}" for m in self.metric_names)),
+        ] + ([("additional metrics", ", ".join(f"{m} {v:.4f}" for m, v in best_extra.items()))]
+             if len(best_extra) else []) + [
             ("hyper-parameters", best["params"] or "(defaults)"),
             ("features", f"{best['n_features']}: {textwrap.shorten(str(best['features']), 300)}"),
-            ("validation", str(best["validation"])),
+            ("validation", f"{best['validation']}  ·  {self._evaluated_on()}"),
             ("configurations / models", f"{self.n_configurations} / {len(self.summary)}"),
             ("visualizations", visualizations.summary()),
         ])
@@ -296,6 +318,7 @@ class ExperimentReport:
         pdf.key_values(section, [
             ("created", f"{self.created:%Y-%m-%d %H:%M:%S}"),
             ("task", self.task), ("validation", str(best["validation"])),
+            ("evaluated on", self._evaluated_on()),
             ("ranking metric", f"{metric} ({direction})"),
             ("models", ", ".join(self.summary.index)),
             ("preprocessing", ", ".join(self.preprocessing) or "none"),
@@ -306,16 +329,26 @@ class ExperimentReport:
             pdf.table(section, pd.DataFrame(self.search_log), index=False)
 
         section = "Dataset Overview"
-        pdf.key_values(section, [("rows", str(self.n_rows)), ("features", str(self.n_columns))])
-        pdf.paragraph(section, "Feature columns: " + ", ".join(self.feature_names))
+        pdf.key_values(section, [("rows", str(self.n_rows)), ("features", str(self.n_columns)),
+                                 ("feature columns", ", ".join(self.feature_names))])
 
         section = "Overall Results and Model Comparison"
         pdf.heading(section, "Per model")
         pdf.paragraph(section, f"Best, mean, spread and worst {metric} over each model's configurations, and the "
                                f"mean of every other metric.")
         pdf.table(section, self.summary.drop(columns=["best_params"]))
+        if not extras.empty:
+            from fitfleet.results.base import METRIC_INFO
+            pdf.heading(section, "Additional metrics (best configuration of each model)")
+            pdf.paragraph(section, "Reported only, not used for ranking; computed from the same out-of-sample "
+                                   "predictions. Empty = does not apply to that model (e.g. no predict_proba).")
+            pdf.table(section, extras)
+            pdf.bullets(section, [f"{m}: {METRIC_INFO[m]}" for m in extras.columns if m in METRIC_INFO])
         pdf.heading(section, f"Top {min(top, self.n_configurations)} configurations")
-        pdf.table(section, self.leaderboard.drop(columns=["features"]).rename_axis("rank"), max_rows=top)
+        board = self.leaderboard.drop(columns=["features"]).rename_axis("rank")
+        if self.fit_times.notna().any():
+            board = board.assign(fit_time_s=self.fit_times)
+        pdf.table(section, board, max_rows=top)
         detail = ("confusion matrix, ROC and precision-recall curves, per-class scores, calibration"
                   if self.task == "classification" else
                   "actual vs predicted, residual diagnostics, Q-Q plot, error by target range")

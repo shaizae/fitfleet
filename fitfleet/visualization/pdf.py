@@ -252,7 +252,8 @@ class PdfReport:
         rows = []
         for idx, row in frame.astype(object).iterrows():  # object: integer columns stay integers
             rows.append(([cell(idx)] if index else []) + [cell(v) for v in row.tolist()])
-        lengths = [max([len(columns[i])] + [len(r[i]) for r in rows]) for i in range(len(columns))]
+        # Headers are bold (wider glyphs): weight them up so "mean_f1" doesn't wrap as "mean_f / 1".
+        lengths = [max([round(len(columns[i]) * 1.2)] + [len(r[i]) for r in rows]) for i in range(len(columns))]
         weights = [min(max(n, 4), 48) for n in lengths]
         widths = [width * w / sum(weights) for w in weights]
         data = [[Paragraph(_text(c), styles["cellhead"]) for c in columns]]
