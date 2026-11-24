@@ -796,14 +796,13 @@ def test_run_log_properties_and_pdf_reports_attach_the_execution(tmp_path, iris,
     assert pdf.parent == js.parent == tmp_path / "log" and pdf.exists()
     assert json.loads(js.read_text(encoding="utf-8"))["tree"][0].startswith("k_folds")
 
-    # both PDF reports add the run's execution and write the execution-log PDF next to themselves
+    # both PDF reports add the run's execution as a section; no separate execution-log PDF next to them
     added.clear()
     best[0].save_pdf_report(str(tmp_path / "model"))
-    assert len(list((tmp_path / "model").glob("execution-log_*.pdf"))) == 1
+    assert not list((tmp_path / "model").glob("execution-log_*.pdf"))
     run.experiment_report().save_pdf_report(tmp_path / "exp")
-    assert len(list((tmp_path / "exp").glob("execution-log_*.pdf"))) == 1
-    # 2 reports x (their "Execution Summary" section + the execution-log PDF saved next to them)
-    assert len(added) == 4 and all(log.find("k_folds") is not None for log in added)
+    assert not list((tmp_path / "exp").glob("execution-log_*.pdf"))
+    assert len(added) == 2 and all(log.find("k_folds") is not None for log in added)
 
     assert not hasattr(run._execution, "save_pdf_log") and not hasattr(run._execution.log(), "execution_log")
     assert "_execution" not in pickle.loads(pickle.dumps(best[0])).__dict__  # a live tracker is never pickled

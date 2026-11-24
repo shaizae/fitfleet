@@ -203,11 +203,9 @@ class BaseResults(ABC):
         if params:
             pdf.key_values("Experiment Configuration", [(k, repr(v)) for k, v in sorted(params.items())])
         self._report_details(pdf)
-        from fitfleet.results.experiment import _add_execution, _save_execution_pdf
+        from fitfleet.results.experiment import _add_execution
         _add_execution(pdf, self._execution)  # the run's log, as the "Execution Summary" section
-        path = pdf.build(filename, visualizations)
-        _save_execution_pdf(Path(filename).parent, self._execution)  # + execution-log_<id>_<time>.pdf
-        return path
+        return pdf.build(filename, visualizations)
 
     def _report_details(self, pdf) -> None:
         """Hook: add task-specific text to the per-model PDF."""
@@ -229,8 +227,7 @@ class BaseResults(ABC):
 
     @abstractmethod
     def save_pdf_report(self, filename: str) -> None:
-        """Write a PDF report into the folder `filename` (with the run's execution log, which is
-        also saved next to it as execution-log_<id>_<time>.pdf)."""
+        """Write a PDF report into the folder `filename` (with the run's execution log as a section)."""
         ...
 
     @abstractmethod

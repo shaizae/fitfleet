@@ -217,8 +217,8 @@ These three are the only Python API for outputting a log. For a log on disk (a r
 `fitfleet run`, or the `output_dir` of your own `ExecutionTracker`), use `fitfleet log <folder>`.
 
 **PDF reports add it automatically.** The log of the run they came from becomes the
-**Execution Summary** section, and `save_pdf_report()` also writes `execution-log_<id>_<time>.pdf`
-in the same folder:
+**Execution Summary** section (no separate execution-log file is written; `run.save_pdf_log`
+saves the execution report on its own, e.g. to see what failed):
 
 * `run.experiment_report().save_pdf_report(folder)`
 * `result.save_pdf_report(folder)` for the results `filter_by()` / `refit()` return

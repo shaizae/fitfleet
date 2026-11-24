@@ -254,8 +254,7 @@ class ExperimentReport:
         skipped / failed ones. Each plot is generated in isolation, so one failing plot never
         removes the others; `top` = configurations listed in the leaderboard table.
         The run's execution log (which stages passed, failed or were skipped, where and why, and
-        the stage tree) is the "Execution Summary" section and is also saved next to the report
-        as execution-log_<id>_<time>.pdf."""
+        the stage tree) is the "Execution Summary" section."""
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
@@ -267,7 +266,6 @@ class ExperimentReport:
             path = pdf.build(path, visualizations, identifiers=ranks)
         finally:  # statuses stay inspectable; the images are released
             self.last_visualizations = visualizations.without_images()
-        _save_execution_pdf(folder, self._execution)  # + execution-log_<id>_<time>.pdf next to it
         return path
 
     def _pdf(self, visualizations, top: int):
@@ -362,16 +360,3 @@ def _add_execution(pdf, execution) -> None:
             log._add_to_pdf(pdf)
     except Exception as e:  # noqa: BLE001 - a broken log must not cost the user the whole PDF
         pdf.warnings.append(f"Execution Summary left out: {type(e).__name__}: {e}")
-
-
-def _save_execution_pdf(folder, execution) -> Path | None:
-    """The run's execution-log PDF next to a saved report; never fails the report (logged instead)."""
-    from fitfleet.tracking import ExecutionLog
-    try:
-        log = ExecutionLog.of(execution)
-        if log is not None and len(log):
-            return log._save_pdf_log(folder)
-    except Exception as e:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("execution log PDF not written: %s: %s", type(e).__name__, e)
-    return None
