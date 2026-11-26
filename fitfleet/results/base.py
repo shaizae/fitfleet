@@ -3,17 +3,38 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import datetime
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
 from fitfleet.model import SavedModel
-from fitfleet.utils import ValidationType, create_path, in_enum, is_fitted
+from fitfleet.utils import ReportFormat, ValidationType, create_path, in_enum, is_fitted
 
 if TYPE_CHECKING:
+    import pandas as pd
     from sklearn.base import BaseEstimator
+
+# What each report-only metric means, printed next to its value in the PDFs.
+METRIC_INFO = {
+    "balanced_accuracy": "mean recall over the classes; not inflated by a large class",
+    "macro_precision": "precision averaged over classes, each class weighted equally",
+    "macro_recall": "recall averaged over classes, each class weighted equally",
+    "macro_f1": "F1 averaged over classes, each class weighted equally (small classes count as much)",
+    "mcc": "Matthews correlation, -1..1; 0 = no better than chance, robust to imbalance",
+    "cohen_kappa": "agreement with the truth beyond chance; 0 = chance, 1 = perfect",
+    "roc_auc": "ROC AUC for the positive (second) class; 0.5 = chance",
+    "roc_auc_ovr": "ROC AUC one-vs-rest, averaged over classes (macro); 0.5 = chance",
+    "average_precision": "area under the precision-recall curve of the positive class",
+    "log_loss": "cross-entropy of the predicted probabilities (lower is better)",
+    "brier": "mean squared error of the positive-class probability (lower is better)",
+    "explained_variance": "share of the target's variance explained (like R², ignores a constant bias)",
+    "median_ae": "median absolute error: the typical error, insensitive to outliers (target units)",
+    "max_error": "largest absolute error of any row (target units)",
+    "mape": "mean absolute percentage error, as a fraction (0.1 = 10%); left out if a target is 0",
+    "mean_residual": "mean of actual - predicted: > 0 under-predicts, < 0 over-predicts on average",
+}
 
 
 class BaseResults(ABC):
@@ -137,6 +158,59 @@ class BaseResults(ABC):
         """Every metric of this result, by name."""
         ...
 
+    @property
+    def extra_metrics(self) -> dict[str, float]:
+        """Metrics shown in the reports but not used to rank or filter, from the stored predictions.
+
+        {} without predictions. A metric that does not apply (e.g. ROC AUC without predict_proba,
+        MAPE when a target is 0) or cannot be computed is left out rather than estimated."""
+        if self._target_test is None or self._pred_test is None or len(self._target_test) == 0:
+            return {}
+        out = {}
+        for name, compute in self._extra_metric_functions():
+            try:
+                value = float(compute())
+            except Exception:  # noqa: BLE001 - one inapplicable metric must not cost the others
+                continue
+            if np.isfinite(value):
+                out[name] = value
+        return out
+
+    def _extra_metric_functions(self) -> list[tuple[str, Callable[[], float]]]:
+        """Hook: (name, zero-argument function) for each extra metric of this task."""
+        return []
+
+    def fold_metrics(self) -> pd.DataFrame | None:
+        """The ranking metrics on each validation fold, one row per fold (k-fold results only).
+
+        The pooled predictions are stored fold by fold (`fold_sizes`); None when the folds are not
+        recorded (train / test split), or are single rows (leave-one-out)."""
+        import pandas as pd
+        sizes, y, pred = self.fold_sizes, self._target_test, self._pred_test
+        if sizes is None or y is None or pred is None:
+            return None
+        sizes = np.asarray(sizes, dtype=int)
+        if len(sizes) < 2 or sizes.sum() != len(y) or sizes.min() < 2:
+            return None
+        proba = getattr(self, "_predict_score", None)
+        bounds = np.concatenate([[0], np.cumsum(sizes)])
+        rows = []
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            part = type(self)(self.model)
+            part.evaluate(y[a:b], pred[a:b], None if proba is None else proba[a:b])
+            rows.append({"rows": int(b - a), **part.metrics})
+        return pd.DataFrame(rows, index=pd.RangeIndex(1, len(rows) + 1, name="fold"))
+
+    def evaluation_rows(self) -> str:
+        """How many rows the metrics were computed on, and how they were split into folds."""
+        n = 0 if self._target_test is None else len(self._target_test)
+        sizes = self.fold_sizes
+        if sizes is None or len(sizes) < 2:
+            return f"{n} rows"
+        low, high = int(np.min(sizes)), int(np.max(sizes))
+        each = f"{low}" if low == high else f"{low}-{high}"
+        return f"{n} rows in {len(sizes)} folds ({each} rows each)"
+
     def to_model(self) -> SavedModel:
         """The fitted model with its column names, labels and scores, ready to save or predict."""
         if not is_fitted(self.model):
@@ -159,19 +233,21 @@ class BaseResults(ABC):
         """Save to a new file in the folder `path`; load it with fitfleet.load(file)."""
         return self.to_model().save(path)
 
-    def save_results(self, path: str) -> None:
-        """Save the model and the PDF report into a new timestamped subfolder of `path`.
+    def save_results(self, path: str, report_format: ReportFormat | str = ReportFormat.pdf) -> None:
+        """Save the model and the report into a new timestamped subfolder of `path`.
 
+        report_format: ReportFormat.pdf (default), .html or .dual (both files); see save_report.
         The model is saved first; a failure while writing the report is logged and does
         not affect the saved model."""
         from fitfleet.visualization.core import safe_call
+        report_format = ReportFormat.parse(report_format)
         name = f"{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"
         folder = os.path.join(path, name)
 
         create_path(folder)
 
         self.save_model(folder)
-        safe_call(self.save_pdf_report, folder, what=f"PDF report of {self.name}")
+        safe_call(self.save_report, folder, report_format, what=f"{report_format.label} report of {self.name}")
 
     def visualize(self):
         """Every plot that applies to this result, each generated in isolation.
@@ -189,25 +265,62 @@ class BaseResults(ABC):
         state.pop("_execution", None)
         return state
 
-    def _build_pdf_report(self, filename: str, title: str) -> Path:
-        """The per-model PDF: metrics, then every applicable plot, then the visualization appendix."""
+    def save_report(self, folder: str, report_format: ReportFormat | str = ReportFormat.pdf) -> list[Path]:
+        """Write a timestamped report of this result into the folder `folder`; returns the paths, PDF first.
+
+        report_format: ReportFormat.pdf (default), ReportFormat.html - the same report (metrics, every
+        plot with its explanation, the appendix and the run's execution log) as one self-contained
+        HTML file with the plots embedded - or ReportFormat.dual for both files, from one rendering
+        of the plots.
+
+        Metrics, then every applicable plot (classification: confusion matrix, per-class scores, ROC /
+        precision-recall / calibration when probabilities exist; regression: actual vs predicted,
+        residual diagnostics, error by target range; feature importance when the model is fitted),
+        each generated in isolation: a plot that fails or does not apply is listed in the report's
+        appendix instead of stopping the report."""
+        report_format = ReportFormat.parse(report_format)
+        if self._pred_test is None:
+            raise ValueError("No predictions available")
+        stem = os.path.join(folder, f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}")
+        return self._build_report(stem, self._report_title(), report_format)
+
+    def _report_title(self) -> str:
+        """Hook: the title of this result's report."""
+        return f"Report - {self.name}"
+
+    def _build_report(self, stem: str | Path, title: str, report_format: ReportFormat) -> list[Path]:
+        """The per-model report: metrics, then every applicable plot, then the visualization appendix,
+        written to `stem`.pdf and / or `stem`.html."""
+        import pandas as pd
         from fitfleet.visualization.pdf import PdfReport
         visualizations = self.visualize()
         self.last_visualizations = visualizations.without_images()  # statuses only; images go to the PDF
         pdf = PdfReport(title, f"Validation: {self.validation or 'n/a'}  ·  generated by fitfleet",
                         landscape_pages=False)
-        pdf.key_values("Executive Summary", [("model", self.name), ("validation", str(self.validation) or "n/a")]
+        pdf.key_values("Executive Summary", [("model", self.name), ("validation", str(self.validation) or "n/a"),
+                                             ("evaluated on", self.evaluation_rows())]
                        + [(k, f"{v:.4f}") for k, v in self.metrics.items()]
                        + ([("fit + predict time", f"{self.fit_time:.3f} s")] if self.fit_time is not None else []))
+        extra = self.extra_metrics
+        if extra:
+            pdf.heading("Executive Summary", "Additional metrics (reported only, not used for ranking)")
+            pdf.key_values("Executive Summary", [(k, f"{v:.4f}  ({METRIC_INFO[k]})" if k in METRIC_INFO
+                                                  else f"{v:.4f}") for k, v in extra.items()])
         params = {k: v for k, v in self.params.items()}
         if params:
             pdf.key_values("Experiment Configuration", [(k, repr(v)) for k, v in sorted(params.items())])
         self._report_details(pdf)
-        from fitfleet.results.experiment import _add_execution, _save_execution_pdf
+        folds = self.fold_metrics()
+        if folds is not None:
+            section = "Cross-Validation Analysis"
+            pdf.paragraph(section, "Each metric computed on every validation fold separately. The pooled values "
+                                   "in the summary use every row at once, so they are not exactly the mean of "
+                                   "the folds. Folds share training rows: the spread understates the true variance.")
+            stats = folds.drop(columns=["rows"]).agg(["mean", "std"]).rename(index={"std": "sd"})
+            pdf.table(section, pd.concat([folds.astype({"rows": object}), stats]).rename_axis("fold"))
+        from fitfleet.results.experiment import _add_execution
         _add_execution(pdf, self._execution)  # the run's log, as the "Execution Summary" section
-        path = pdf.build(filename, visualizations)
-        _save_execution_pdf(Path(filename).parent, self._execution)  # + execution-log_<id>_<time>.pdf
-        return path
+        return pdf.write(stem, report_format, visualizations)
 
     def _report_details(self, pdf) -> None:
         """Hook: add task-specific text to the per-model PDF."""
@@ -225,12 +338,6 @@ class BaseResults(ABC):
     @abstractmethod
     def report_lines(self) -> Iterator[str]:
         """Yield the lines of the text report ("" marks a blank line)."""
-        ...
-
-    @abstractmethod
-    def save_pdf_report(self, filename: str) -> None:
-        """Write a PDF report into the folder `filename` (with the run's execution log, which is
-        also saved next to it as execution-log_<id>_<time>.pdf)."""
         ...
 
     @abstractmethod

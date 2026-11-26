@@ -1,7 +1,8 @@
-"""PDF assembly: sections in a fixed order, every generated figure, and an appendix of the rest.
+"""Report assembly: sections in a fixed order, every generated figure, and an appendix of the rest.
 
-Content is recorded as plain data and turned into reportlab flowables only when the
-file is built, so a failed build can be retried text-only. The PDF is written to a
+Content is recorded as plain data and turned into reportlab flowables (PDF) or HTML
+(fitfleet.visualization.html) only when a file is built, so both formats show exactly the
+same report and a failed PDF build can be retried text-only. Files are written to a
 temporary file and moved into place, so a failure never leaves a truncated report.
 """
 from __future__ import annotations
@@ -11,9 +12,10 @@ import io
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Sequence
 from xml.sax.saxutils import escape
 
+from fitfleet.utils.enums import ReportFormat
 from fitfleet.visualization.core import DPI, SECTIONS, VisualizationReport, VizStatus
 
 if TYPE_CHECKING:
@@ -33,10 +35,60 @@ RULE = "#d9d8d3"
 ZEBRA = "#f5f5f3"
 STATUS_INK = {VizStatus.SUCCESS: "#006300", VizStatus.SKIPPED: "#7a5a00", VizStatus.FAILED: "#b42318"}
 
+# explanations shared by the PDF and the HTML appendix
+FAILED_NOTE = ("These plots raised an error. The experiment and every other plot were not "
+               "affected; the error is recorded here and in the fitfleet.visualization log.")
+SKIPPED_NOTE = "Not applicable to the data or results available - nothing was estimated to fill the gap."
+
 
 def _text(value: Any) -> str:
     """Escape for reportlab's paragraph markup."""
     return escape(str(value))
+
+
+def format_cell(value: Any, digits: int = 4) -> str:
+    """A table cell as text: floats with `digits` decimals, NaN as empty, the rest as str()."""
+    import numpy as np
+    if isinstance(value, (float, np.floating)):
+        return "" if np.isnan(value) else f"{value:.{digits}f}"
+    return str(value)
+
+
+def frame_rows(frame: pd.DataFrame, index: bool, digits: int) -> tuple[list[str], list[list[str]]]:
+    """(header, rows) of a DataFrame as text, the index first when `index`."""
+    columns = ([frame.index.name or ""] if index else []) + [str(c) for c in frame.columns]
+    rows = []
+    for idx, row in frame.astype(object).iterrows():  # object: integer columns stay integers
+        rows.append(([format_cell(idx, digits)] if index else []) + [format_cell(v, digits) for v in row.tolist()])
+    return columns, rows
+
+
+def figure_meta(result, identifiers: dict[str, str]) -> str:
+    """The line under a figure's title: its id and the model(s) it shows."""
+    models = [f"{m} ({identifiers[m]})" if m in identifiers else m for m in result.models]
+    return "  ·  ".join([f"id: {result.key}"] + ([f"model(s): {', '.join(models)}"] if models else []))
+
+
+INDEX_HEADER = ("#", "visualization", "section", "status", "time (s)", "detail")
+
+
+def index_intro(viz: VisualizationReport) -> str:
+    """The sentence above the visualization index."""
+    return f"Every visualization attempted for this report: {viz.summary()}."
+
+
+def index_rows(viz: VisualizationReport) -> list[tuple[int, Any, str]]:
+    """(number, result, detail) for each row of the visualization index."""
+    return [(i, r, ("included in the report" if r.ok else r.reason)[:300]) for i, r in enumerate(viz, start=1)]
+
+
+class Section(NamedTuple):
+    """One numbered section of a built report, with what goes in it."""
+    number: int
+    name: str
+    blocks: list            # (kind, payload) as recorded by paragraph() / table() / ...
+    figures: list           # SUCCESS VisualizationResults placed in this section
+    new_page: bool          # the PDF starts it on a new page (so does the HTML, when printed)
 
 
 class PdfReport:
@@ -83,6 +135,39 @@ class PdfReport:
     def preformatted(self, section: str, text: str) -> PdfReport:
         return self._add(section, "pre", text)
 
+    def sections(self, viz: VisualizationReport, images: bool = True) -> list[Section]:
+        """The sections that have content, numbered, in ORDER. Both formats are built from this.
+
+        `images` False: the figures are left out (a PDF rebuilt text-only), so the appendix
+        that explains it is included."""
+        figures: dict[str, list] = {name: [] for name in SECTIONS}
+        for result in viz.succeeded:
+            figures.setdefault(result.section, []).append(result)
+        appendix_needed = len(viz) > 0 or self.warnings or not images
+        out: list[Section] = []
+        for name in ORDER:
+            blocks = self._blocks.get(name, [])
+            section_figures = figures.get(name, [])
+            if name == APPENDIX[0]:
+                has_content = len(viz) > 0
+            elif name == APPENDIX[1]:
+                has_content = appendix_needed and (viz.skipped or viz.failed or self.warnings or not images)
+            else:
+                has_content = bool(blocks or section_figures)
+            if not has_content:
+                continue
+            new_page = bool(out) and bool(section_figures or name in APPENDIX or name in EXECUTION
+                                          or name == SECTIONS[0])
+            out.append(Section(len(out) + 1, name, blocks, section_figures, new_page))
+        return out
+
+    def side_by_side(self, result, images: bool = True) -> bool:
+        """Landscape layout: the figure on the left, its explanation and values on the right.
+        Wide figures (small multiples, metric panels) need the full width."""
+        w_px, h_px = result.size_px or (1200, 800)
+        return bool(self.landscape and images and result.image and len(result.metrics) <= 14
+                    and w_px / h_px < 2.0)
+
     # ------------------------------------------------------------ build
     def build(self, path: str | Path, visualizations: VisualizationReport | None = None,
               identifiers: dict[str, str] | None = None) -> Path:
@@ -107,6 +192,30 @@ class PdfReport:
                 except OSError:
                     pass
         return path
+
+    def build_html(self, path: str | Path, visualizations: VisualizationReport | None = None,
+                   identifiers: dict[str, str] | None = None) -> Path:
+        """Write the same report as one self-contained HTML file (figures embedded) to `path`."""
+        from fitfleet.visualization.html import render_report, write_atomic
+        page = render_report(self, visualizations or VisualizationReport(), identifiers or {})
+        return write_atomic(Path(path), page)
+
+    def write(self, stem: str | Path, report_format: ReportFormat | str = ReportFormat.pdf,
+              visualizations: VisualizationReport | None = None,
+              identifiers: dict[str, str] | None = None) -> list[Path]:
+        """Write the report to `stem`.pdf, `stem`.html or both (ReportFormat.pdf / .html / .dual).
+
+        Returns the paths, PDF first. A warning raised while building one file (such as a PDF
+        rebuilt without figures) is reported in that file only."""
+        stem = Path(stem)
+        warnings = list(self.warnings)
+        paths = []
+        for fmt in ReportFormat.parse(report_format).files:
+            self.warnings = list(warnings)
+            path = stem.with_name(f"{stem.name}.{fmt}")
+            paths.append(self.build(path, visualizations, identifiers) if fmt == "pdf"
+                         else self.build_html(path, visualizations, identifiers))
+        return paths
 
     def _build(self, path: Path, viz: VisualizationReport, identifiers: dict[str, str], images: bool) -> None:
         from reportlab.lib.pagesizes import A4, landscape
@@ -166,38 +275,19 @@ class PdfReport:
         if self.subtitle:
             story.append(Paragraph(_text(self.subtitle), styles["subtitle"]))
 
-        figures: dict[str, list] = {name: [] for name in SECTIONS}
-        for result in viz.succeeded:
-            figures.setdefault(result.section, []).append(result)
-
-        appendix_needed = len(viz) > 0 or self.warnings or not images
-        number = 0
-        first = True
-        for name in ORDER:
-            blocks = self._blocks.get(name, [])
-            section_figures = figures.get(name, [])
-            if name == APPENDIX[0]:
-                has_content = len(viz) > 0
-            elif name == APPENDIX[1]:
-                has_content = appendix_needed and (viz.skipped or viz.failed or self.warnings or not images)
-            else:
-                has_content = bool(blocks or section_figures)
-            if not has_content:
-                continue
-            number += 1
-            if not first and (section_figures or name in APPENDIX or name in EXECUTION or name == SECTIONS[0]):
+        for section in self.sections(viz, images):
+            if section.new_page:
                 story.append(PageBreak())
-            elif not first:
+            elif section.number > 1:
                 story.append(Spacer(1, 10))
-            first = False
-            story.append(Paragraph(f"{number}. {_text(name)}", styles["h1"]))
-            for kind, payload in blocks:
+            story.append(Paragraph(f"{section.number}. {_text(section.name)}", styles["h1"]))
+            for kind, payload in section.blocks:
                 story.extend(self._block(kind, payload, styles, width))
-            for result in section_figures:
+            for result in section.figures:
                 story.extend(self._figure(result, styles, width, height, identifiers, images))
-            if name == APPENDIX[0]:
+            if section.name == APPENDIX[0]:
                 story.extend(self._index(viz, styles, width))
-            elif name == APPENDIX[1]:
+            elif section.name == APPENDIX[1]:
                 story.extend(self._problems(viz, styles, images))
         return story
 
@@ -240,19 +330,11 @@ class PdfReport:
         return table
 
     def _frame_table(self, frame, index: bool, digits: int, styles, width: float):
-        import numpy as np
         from reportlab.platypus import Paragraph, Table
 
-        def cell(value) -> str:
-            if isinstance(value, (float, np.floating)):
-                return "" if np.isnan(value) else f"{value:.{digits}f}"
-            return str(value)
-
-        columns = ([frame.index.name or ""] if index else []) + [str(c) for c in frame.columns]
-        rows = []
-        for idx, row in frame.astype(object).iterrows():  # object: integer columns stay integers
-            rows.append(([cell(idx)] if index else []) + [cell(v) for v in row.tolist()])
-        lengths = [max([len(columns[i])] + [len(r[i]) for r in rows]) for i in range(len(columns))]
+        columns, rows = frame_rows(frame, index, digits)
+        # Headers are bold (wider glyphs): weight them up so "mean_f1" doesn't wrap as "mean_f / 1".
+        lengths = [max([round(len(columns[i]) * 1.2)] + [len(r[i]) for r in rows]) for i in range(len(columns))]
         weights = [min(max(n, 4), 48) for n in lengths]
         widths = [width * w / sum(weights) for w in weights]
         data = [[Paragraph(_text(c), styles["cellhead"]) for c in columns]]
@@ -265,18 +347,12 @@ class PdfReport:
         from reportlab.platypus import Image, KeepTogether, Paragraph, Spacer, Table, TableStyle
         # spacing goes before the title, inside the block: a trailing spacer could spill onto
         # an otherwise empty page just before a section's page break
-        parts = [Spacer(1, 10), Paragraph(_text(result.title), styles["h2"])]
-        models = [f"{m} ({identifiers[m]})" if m in identifiers else m for m in result.models]
-        meta = [f"id: {result.key}"] + ([f"model(s): {', '.join(models)}"] if models else [])
-        parts.append(Paragraph(_text("  ·  ".join(meta)), styles["meta"]))
+        parts = [Spacer(1, 10), Paragraph(_text(result.title), styles["h2"]),
+                 Paragraph(_text(figure_meta(result, identifiers)), styles["meta"])]
         caption = [Paragraph("<b>What it shows.</b> " + _text(result.description), styles["caption"])]
         if result.note:
             caption.append(Paragraph(_text(result.note), styles["caption"]))
-        w_px, h_px = result.size_px or (1200, 800)
-        # wide figures (small multiples, metric panels) need the full width; the others leave room beside them
-        side_by_side = (self.landscape and images and result.image and len(result.metrics) <= 14
-                        and w_px / h_px < 2.0)
-        if side_by_side:  # landscape: figure left, explanation and values right
+        if self.side_by_side(result, images):  # landscape: figure left, explanation and values right
             w_px, h_px = result.size_px or (1200, 800)
             w_pt, h_pt = w_px / DPI * 72, h_px / DPI * 72
             left, right = width * 0.64, width * 0.34
@@ -307,16 +383,14 @@ class PdfReport:
 
     def _index(self, viz: VisualizationReport, styles, width: float) -> list:
         from reportlab.platypus import Paragraph, Spacer, Table
-        intro = Paragraph(_text(f"Every visualization attempted for this report: {viz.summary()}."), styles["body"])
-        header = ["#", "visualization", "section", "status", "time (s)", "detail"]
-        data = [[Paragraph(h, styles["cellhead"]) for h in header]]
-        for i, r in enumerate(viz, start=1):
+        intro = Paragraph(_text(index_intro(viz)), styles["body"])
+        data = [[Paragraph(h, styles["cellhead"]) for h in INDEX_HEADER]]
+        for i, r, detail in index_rows(viz):
             status = Paragraph(f'<font color="{STATUS_INK[r.status]}"><b>{r.status.value.upper()}</b></font>',
                                styles["cell"])
-            detail = "included in the report" if r.ok else r.reason
             data.append([Paragraph(str(i), styles["cell"]), Paragraph(_text(r.title), styles["cell"]),
                          Paragraph(_text(r.section), styles["cell"]), status,
-                         Paragraph(f"{r.seconds:.2f}", styles["cell"]), Paragraph(_text(detail[:300]), styles["cell"])])
+                         Paragraph(f"{r.seconds:.2f}", styles["cell"]), Paragraph(_text(detail), styles["cell"])])
         fractions = [0.04, 0.26, 0.2, 0.08, 0.07, 0.35]
         table = Table(data, colWidths=[width * f for f in fractions], repeatRows=1, hAlign="LEFT")
         table.setStyle(self._table_style(header=True))
@@ -330,9 +404,7 @@ class PdfReport:
             out += [Paragraph(_text(w), styles["body"]) for w in self.warnings]
         if viz.failed:
             out.append(Paragraph(f"Failed visualizations ({len(viz.failed)})", styles["h2"]))
-            out.append(Paragraph("These plots raised an error. The experiment and every other plot were not "
-                                 "affected; the error is recorded here and in the fitfleet.visualization log.",
-                                 styles["body"]))
+            out.append(Paragraph(_text(FAILED_NOTE), styles["body"]))
             for r in viz.failed:
                 out.append(Paragraph(f"<b>{_text(r.title)}</b> ({_text(r.key)}) - {_text(r.error_type)}: "
                                      f"{_text(r.reason)}", styles["body"]))
@@ -342,7 +414,6 @@ class PdfReport:
                 out.append(Spacer(1, 4))
         if viz.skipped:
             out.append(Paragraph(f"Skipped visualizations ({len(viz.skipped)})", styles["h2"]))
-            out.append(Paragraph("Not applicable to the data or results available - nothing was estimated "
-                                 "to fill the gap.", styles["body"]))
+            out.append(Paragraph(_text(SKIPPED_NOTE), styles["body"]))
             out += [Paragraph(f"<b>{_text(r.title)}</b>: {_text(r.reason)}", styles["body"]) for r in viz.skipped]
         return out

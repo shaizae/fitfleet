@@ -106,7 +106,7 @@ def test_binary_roc_and_model_without_proba(tmp_path):
         run.k_folds(3)
         rep = run.experiment_report()
     assert set(rep.roc_curves()) == {"LogisticRegression"}  # LinearSVC has no predict_proba
-    assert rep.save_pdf_report(tmp_path).stat().st_size > 0
+    assert rep.save_report(tmp_path)[0].stat().st_size > 0
 
 
 def test_regression_has_no_roc(regression_run_report):

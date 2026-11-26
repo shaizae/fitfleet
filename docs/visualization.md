@@ -1,4 +1,4 @@
-# Visualization and PDF reporting
+# Visualization and PDF / HTML reporting
 
 This document covers the visualization subsystem in `fitfleet/visualization/`, in this order:
 
@@ -180,7 +180,8 @@ Any future PCA view must be labeled as a projection, not the original feature sp
 | `visualization/style.py` | Theme (`rc_context`), validated categorical palette, sequential colormap, `new_figure()`, model→color mapping |
 | `visualization/context.py` | `ResultView` and `VisualizationContext`: read-only snapshots built from an `ExperimentReport` or a single result |
 | `visualization/plots/*.py` | The plot specs, grouped by section: `classification`, `regression`, `comparison`, `features` |
-| `visualization/pdf.py` | `PdfReport`: sections, figure blocks, tables, appendix, fallback, atomic write |
+| `visualization/pdf.py` | `PdfReport`: sections, figure blocks, tables, appendix, fallback, atomic write; `write()` builds the report in each requested format |
+| `visualization/html.py` | The HTML renderer: the same `PdfReport` content as one self-contained HTML file (plots embedded as base64 PNG) |
 | `visualization/background.py` | `ReportWorker`: a single daemon thread that renders reports off the main thread |
 
 ### Error isolation, layer by layer
@@ -235,6 +236,22 @@ Each figure block contains: the title, the model(s) and configuration ranks it s
 ratio preserved, scaled to fit the frame), a "What it shows" caption, and the metric values the plot was
 drawn from. On landscape pages a figure narrower than 2:1 gets the caption and values beside it. Wider
 figures (small multiples, metric panels) span the full width.
+
+### HTML reports
+
+`save_report(folder, ReportFormat.html)` writes the same report as HTML, `ReportFormat.dual` writes both
+files and `ReportFormat.pdf` is the default.
+`PdfReport` records its content as plain data; `PdfReport.sections()` decides which sections appear,
+their numbers and where a new page starts, and `pdf.py` holds the shared cell formatting, figure
+lines and appendix texts. The PDF (`_story`) and the HTML (`html.render_report`) are both built from
+these, so the two formats cannot drift apart: a section, table or plot added to a report appears in both.
+`write()` builds each format from one `VisualizationReport`, so the plots are drawn once. A warning
+raised while building one format (a PDF rebuilt without figures) is reported in that file only.
+
+The page needs nothing from the network: the CSS is inline and the figures are base64 PNGs. Section
+titles are linked from a table of contents, landscape reports keep the figure-and-caption-side-by-side
+layout on wide screens, and when printed a section starts a new page wherever the PDF starts one.
+`FeatureResearch` builds its report as a list of items rendered by `_pdf_elements()` and `_html_page()`.
 
 ### Sample reports
 

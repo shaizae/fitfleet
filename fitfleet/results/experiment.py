@@ -15,6 +15,7 @@ from sklearn.metrics import auc, roc_curve
 from sklearn.preprocessing import label_binarize
 
 from fitfleet.search import rank
+from fitfleet.utils import ReportFormat
 
 if TYPE_CHECKING:
     from fitfleet.features import Features
@@ -133,6 +134,20 @@ class ExperimentReport:
         summary = pd.DataFrame(rows).set_index("model")
         return summary.sort_values("best_rank")
 
+    def extra_metrics_table(self) -> pd.DataFrame:
+        """Report-only metrics (balanced accuracy, MCC, ROC AUC, median error, ...) of each model's best
+        configuration, one row per model in summary order; a metric that does not apply to a model is NaN."""
+        rows = {model: self._best_per_model[model].extra_metrics for model in self.summary.index
+                if model in self._best_per_model}
+        table = pd.DataFrame.from_dict(rows, orient="index")
+        table.index.name = "model"
+        return table.dropna(axis=1, how="all")
+
+    def _evaluated_on(self) -> str:
+        """Rows and folds the best configuration was scored on."""
+        result = self._best_per_model.get(self.best["model"])
+        return "n/a" if result is None else result.evaluation_rows()
+
     def roc_curves(self) -> dict[str, tuple[np.ndarray, np.ndarray, float]]:
         """{model: (fpr, tpr, auc)} for each model's best configuration (classification only).
         Multiclass: micro-average over the classes (one-vs-rest). Models without predict_proba are left out.
@@ -191,6 +206,10 @@ class ExperimentReport:
         yield f"  params  : {best['params'] or '(defaults)'}"
         yield f"  features: {best['n_features']} ({best['features']})"
         yield "  " + "  ".join(f"{m}={best[m]:.4f}" for m in self.metric_names)
+        extra = self._best_per_model[best["model"]].extra_metrics if best["model"] in self._best_per_model else {}
+        if extra:
+            for line in textwrap.wrap("  ".join(f"{m}={v:.4f}" for m, v in extra.items()), 110):
+                yield "  " + line
 
     def setup_lines(self) -> Iterator[str]:
         """The features, preprocessing and hyper-parameters the experiment used."""
@@ -245,30 +264,35 @@ class ExperimentReport:
         from fitfleet.visualization import VisualizationContext, VisualizationManager
         return VisualizationManager().run_for(lambda: VisualizationContext.from_experiment(self))
 
-    def save_pdf_report(self, folder: str | Path, top: int = 20) -> Path:
-        """Write experiment_report_<date>.pdf into `folder` and return its path.
+    top = 20  # configurations listed in the report's leaderboard table (report.top = 50 to change it)
+
+    def save_report(self, folder: str | Path, report_format: ReportFormat | str = ReportFormat.pdf) -> list[Path]:
+        """Write experiment_report_<date>.<pdf|html> into `folder` and return the paths, PDF first.
+
+        report_format: ReportFormat.pdf (default), ReportFormat.html - the same report (every section,
+        table, plot and explanation) as one self-contained HTML file with the plots embedded - or
+        ReportFormat.dual for both files, from one rendering of the plots.
 
         Sections (only those with content): executive summary, configuration, dataset, model
         comparison, classification or regression analysis, feature analysis, cross-validation,
         hyper-parameter optimization, runtime, then an index of every visualization and the
         skipped / failed ones. Each plot is generated in isolation, so one failing plot never
-        removes the others; `top` = configurations listed in the leaderboard table.
+        removes the others; `self.top` = configurations listed in the leaderboard table.
         The run's execution log (which stages passed, failed or were skipped, where and why, and
-        the stage tree) is the "Execution Summary" section and is also saved next to the report
-        as execution-log_<id>_<time>.pdf."""
+        the stage tree) is the "Execution Summary" section."""
+        report_format = ReportFormat.parse(report_format)
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
+        stem = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}"
         visualizations = self.visualize()
-        pdf = self._pdf(visualizations, top)
+        pdf = self._pdf(visualizations, self.top)
         _add_execution(pdf, self._execution)
         ranks = {model: f"rank #{int(row['best_rank'])}" for model, row in self.summary.iterrows()}
         try:
-            path = pdf.build(path, visualizations, identifiers=ranks)
+            paths = pdf.write(stem, report_format, visualizations, identifiers=ranks)
         finally:  # statuses stay inspectable; the images are released
             self.last_visualizations = visualizations.without_images()
-        _save_execution_pdf(folder, self._execution)  # + execution-log_<id>_<time>.pdf next to it
-        return path
+        return paths
 
     def _pdf(self, visualizations, top: int):
         """The text part of the PDF (the figures are added when it is built)."""
@@ -280,13 +304,17 @@ class ExperimentReport:
                         f"{metric} ({direction})  ·  {self.created:%Y-%m-%d %H:%M}")
 
         section = "Executive Summary"
+        extras = self.extra_metrics_table()
+        best_extra = extras.loc[best["model"]].dropna() if best["model"] in extras.index else pd.Series(dtype=float)
         pdf.key_values(section, [
             ("best configuration", f"{best['model']}  (rank #1)"),
             (f"{metric}", f"{best[metric]:.4f}  ({direction})"),
             ("all metrics", ", ".join(f"{m} {best[m]:.4f}" for m in self.metric_names)),
+        ] + ([("additional metrics", ", ".join(f"{m} {v:.4f}" for m, v in best_extra.items()))]
+             if len(best_extra) else []) + [
             ("hyper-parameters", best["params"] or "(defaults)"),
             ("features", f"{best['n_features']}: {textwrap.shorten(str(best['features']), 300)}"),
-            ("validation", str(best["validation"])),
+            ("validation", f"{best['validation']}  ·  {self._evaluated_on()}"),
             ("configurations / models", f"{self.n_configurations} / {len(self.summary)}"),
             ("visualizations", visualizations.summary()),
         ])
@@ -298,6 +326,7 @@ class ExperimentReport:
         pdf.key_values(section, [
             ("created", f"{self.created:%Y-%m-%d %H:%M:%S}"),
             ("task", self.task), ("validation", str(best["validation"])),
+            ("evaluated on", self._evaluated_on()),
             ("ranking metric", f"{metric} ({direction})"),
             ("models", ", ".join(self.summary.index)),
             ("preprocessing", ", ".join(self.preprocessing) or "none"),
@@ -308,22 +337,33 @@ class ExperimentReport:
             pdf.table(section, pd.DataFrame(self.search_log), index=False)
 
         section = "Dataset Overview"
-        pdf.key_values(section, [("rows", str(self.n_rows)), ("features", str(self.n_columns))])
-        pdf.paragraph(section, "Feature columns: " + ", ".join(self.feature_names))
+        pdf.key_values(section, [("rows", str(self.n_rows)), ("features", str(self.n_columns)),
+                                 ("feature columns", ", ".join(self.feature_names))])
 
         section = "Overall Results and Model Comparison"
         pdf.heading(section, "Per model")
         pdf.paragraph(section, f"Best, mean, spread and worst {metric} over each model's configurations, and the "
                                f"mean of every other metric.")
         pdf.table(section, self.summary.drop(columns=["best_params"]))
+        if not extras.empty:
+            from fitfleet.results.base import METRIC_INFO
+            pdf.heading(section, "Additional metrics (best configuration of each model)")
+            pdf.paragraph(section, "Reported only, not used for ranking; computed from the same out-of-sample "
+                                   "predictions. Empty = does not apply to that model (e.g. no predict_proba).")
+            pdf.table(section, extras)
+            pdf.bullets(section, [f"{m}: {METRIC_INFO[m]}" for m in extras.columns if m in METRIC_INFO])
         pdf.heading(section, f"Top {min(top, self.n_configurations)} configurations")
-        pdf.table(section, self.leaderboard.drop(columns=["features"]).rename_axis("rank"), max_rows=top)
+        board = self.leaderboard.drop(columns=["features"]).rename_axis("rank")
+        if self.fit_times.notna().any():
+            board = board.assign(fit_time_s=self.fit_times)
+        pdf.table(section, board, max_rows=top)
         detail = ("confusion matrix, ROC and precision-recall curves, per-class scores, calibration"
                   if self.task == "classification" else
                   "actual vs predicted, residual diagnostics, Q-Q plot, error by target range")
         pdf.paragraph(section, f"This report is an overview of the experiment. The detailed analysis of each "
                                f"model ({detail}, feature importance) is in that model's own report: "
-                               f"result.save_pdf_report(folder) for the results filter_by() returns.")
+                               f"result.save_report(folder, ReportFormat.pdf / .html / .dual) for the "
+                               f"results filter_by() returns.")
         return pdf
 
     def _findings(self) -> list[str]:
@@ -362,16 +402,3 @@ def _add_execution(pdf, execution) -> None:
             log._add_to_pdf(pdf)
     except Exception as e:  # noqa: BLE001 - a broken log must not cost the user the whole PDF
         pdf.warnings.append(f"Execution Summary left out: {type(e).__name__}: {e}")
-
-
-def _save_execution_pdf(folder, execution) -> Path | None:
-    """The run's execution-log PDF next to a saved report; never fails the report (logged instead)."""
-    from fitfleet.tracking import ExecutionLog
-    try:
-        log = ExecutionLog.of(execution)
-        if log is not None and len(log):
-            return log._save_pdf_log(folder)
-    except Exception as e:  # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning("execution log PDF not written: %s: %s", type(e).__name__, e)
-    return None

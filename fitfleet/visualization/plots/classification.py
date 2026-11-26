@@ -49,12 +49,13 @@ def _metric_comparison(ctx, _):
             ax.text(min(value, 1) - 0.01, y, f"{value:.3f}", ha="right", va="center", fontsize=7, color="white")
         if metric == "accuracy" and baseline is not None:
             ax.axvline(baseline, color=INK_SECONDARY, linewidth=1, linestyle=(0, (4, 3)))
-            ax.text(baseline, len(views) - 0.4, " majority class", fontsize=7, color=INK_SECONDARY, va="bottom")
+            # In the strip kept free below the last bar (see set_ylim), not on the tick labels.
+            ax.text(baseline, len(views) - 0.15, " majority class", fontsize=7, color=INK_SECONDARY, va="bottom")
         ax.set_xlim(0, 1)
         ax.set_title(metric)
         ax.grid(axis="y", visible=False)
     axes[0].set_yticks(range(len(views)), [short(v.name, 22) for v in views])
-    axes[0].invert_yaxis()
+    axes[0].set_ylim(len(views) - 0.1, -0.5)  # inverted (best on top), with room for the baseline label
     fig.supxlabel("score (weighted average over classes for precision / recall / F1; higher is better)",
                   fontsize=8, color=INK_SECONDARY)
     for v in views:
@@ -82,8 +83,10 @@ def _class_distribution(ctx, _):
     ax.bar(range(len(codes)), counts, width=0.6, color=CATEGORICAL[0])
     total = counts.sum()
     for x, c in enumerate(counts):
-        ax.annotate(f"{c} ({c / total:.0%})", (x, c), xytext=(0, 3), textcoords="offset points", ha="center",
-                    fontsize=7, color=INK_SECONDARY)
+        share = c / total  # a small class must not read as "0%"
+        label = f"{c:,}\n" + (f"{share:.1%}" if share < 0.1 else f"{share:.0%}")
+        ax.annotate(label, (x, c), xytext=(0, 3),
+                    textcoords="offset points", ha="center", fontsize=7, color=INK_SECONDARY)
     ax.set_xticks(range(len(codes)), _labels(view, codes), rotation=30 if len(codes) > 6 else 0,
                   ha="right" if len(codes) > 6 else "center")
     ax.set_ylabel("rows")

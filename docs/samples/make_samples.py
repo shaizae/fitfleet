@@ -41,7 +41,7 @@ def main() -> None:
         run.set_hyper_parameters({"max_depth": [2, 4, None], "C": [0.01, 0.1, 1, 10], "kernel": ["rbf", "linear"]})
         run.k_folds(5)
         run.filter_by(run.default_criteria)  # refit the best, so the report can show their importances
-        keep(run.experiment_report().save_pdf_report(work), "multiclass_experiment.pdf")
+        keep(run.experiment_report().save_report(work)[0], "multiclass_experiment.pdf")
 
     d = load_breast_cancer()
     with Classification() as run:
@@ -54,8 +54,8 @@ def main() -> None:
         run.set_hyper_parameters({"max_depth": [2, 4, 8], "C": [0.1, 1, 10]})
         run.k_folds(5)
         best = run.filter_by(run.default_criteria)
-        keep(run.experiment_report().save_pdf_report(work), "binary_experiment.pdf")
-        keep(best[0].save_pdf_report(str(work)), "binary_best_model.pdf")
+        keep(run.experiment_report().save_report(work)[0], "binary_experiment.pdf")
+        keep(best[0].save_report(str(work))[0], "binary_best_model.pdf")
 
     d = load_diabetes()
     with Regression() as run:
@@ -65,8 +65,8 @@ def main() -> None:
         run.set_hyper_parameters({"alpha": [0.01, 0.1, 1, 10], "max_depth": [3, 6, None], "min_samples_leaf": [1, 10]})
         run.k_folds(5)
         best = run.filter_by(run.default_criteria)
-        keep(run.experiment_report().save_pdf_report(work), "regression_experiment.pdf")
-        keep(best[0].save_pdf_report(str(work)), "regression_best_model.pdf")
+        keep(run.experiment_report().save_report(work)[0], "regression_experiment.pdf")
+        keep(best[0].save_report(str(work))[0], "regression_best_model.pdf")
     shutil.rmtree(work, ignore_errors=True)
 
 

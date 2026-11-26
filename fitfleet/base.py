@@ -89,7 +89,7 @@ class BaseML(ABC):
     _encode_target = True
 
     def __init__(self, sound: Sound | str = Sound.none, log_dir: str | Path = "logs"):
-        """log_dir: folder that save_pdf_log / save_json_log write the execution log into."""
+        """log_dir: folder that save_pdf_log / save_html_log / save_json_log write the execution log into."""
         self.sound = Sound(sound)
         self._log_dir = Path(log_dir)
         self._sound_finalizer = None
@@ -619,7 +619,7 @@ class BaseML(ABC):
         criteria: metric to rank by (default accuracy / r2). Hyper-parameters set with
         set_hyper_parameters() are listed per configuration; all_params=True lists every one.
         Returns an ExperimentReport: print() it, or use .leaderboard / .summary / .best,
-        .save_csv(folder) and .save_pdf_report(folder).
+        .save_csv(folder) and .save_report(folder, ReportFormat.pdf | .html | .dual).
         """
         from fitfleet.results.experiment import ExperimentReport
         criteria = self.default_criteria if criteria is None else self.criteria_type(criteria)
@@ -649,6 +649,11 @@ class BaseML(ABC):
         return self._tracker().log()._save_pdf_log(self._log_dir)
 
     @property
+    def save_html_log(self) -> Path:
+        """Write the last run's execution log (the same as save_pdf_log) as one HTML file into log_dir; its path."""
+        return self._tracker().log()._save_html_log(self._log_dir)
+
+    @property
     def save_json_log(self) -> Path:
         """Write the last run's execution log (summary + stage tree + every stage) as JSON into log_dir; its path."""
         return self._tracker().log()._save_json_log(self._log_dir)
@@ -670,7 +675,7 @@ class BaseML(ABC):
             result.feature_columns = columns_in
             result.schema = schema
             result.class_names = self.targets.classes
-            result._execution = self._execution  # its save_pdf_report() adds the run's execution report
+            result._execution = self._execution  # its save_report() adds the run's execution report
             if is_fitted(result.model):
                 continue
             rows = self._train_index if result.validation == ValidationType.train_test_split else slice(None)

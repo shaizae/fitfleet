@@ -282,7 +282,7 @@ def test_nan_predictions_do_not_crash_the_report(tmp_path):
     r.evaluate(y, y + 1)
     r._pred_test = r._pred_test.copy()
     r._pred_test[3] = np.nan
-    path = r.save_pdf_report(str(tmp_path))  # some plots may fail on NaN; the report must not
+    path = r.save_report(str(tmp_path))[0]  # some plots may fail on NaN; the report must not
     assert path.exists()
 
 
@@ -299,7 +299,7 @@ def test_missing_scipy_skips_only_the_qq_plot(reg_run, monkeypatch):
 def test_missing_plotting_backend_skips_everything_but_pdf_is_still_written(reg_run, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "fitfleet.visualization.style", None)
     report = reg_run[2]
-    path = report.save_pdf_report(tmp_path)
+    path = report.save_report(tmp_path)[0]
     viz = report.last_visualizations
     assert len(viz) > 0 and not viz.succeeded and not viz.failed
     assert path.exists() and pdf_images(path) == 0
@@ -309,7 +309,7 @@ def test_missing_plotting_backend_skips_everything_but_pdf_is_still_written(reg_
 # ------------------------------------------------------------------ 6/7/8/12. PDF completeness
 def test_pdf_contains_every_generated_plot(clf_run, tmp_path):
     report = clf_run[2]
-    path = report.save_pdf_report(tmp_path)
+    path = report.save_report(tmp_path)[0]
     viz = report.last_visualizations
     assert len(viz.succeeded) >= 10  # overview plots only; per-model detail is in each result's report
     assert pdf_images(path) == len(viz.succeeded)
@@ -325,7 +325,7 @@ def test_pdf_with_some_failed_plots(clf_run, tmp_path, monkeypatch):
     extra = [spec("always_fails", boom), spec("also_fine", ok_plot)]
     monkeypatch.setattr(core, "_REGISTRY", core.registry() + extra)
     report = clf_run[2]
-    path = report.save_pdf_report(tmp_path)
+    path = report.save_report(tmp_path)[0]
     viz = report.last_visualizations
     assert [r.key for r in viz.failed] == ["always_fails"]
     assert pdf_images(path) == len(viz.succeeded)
@@ -336,7 +336,7 @@ def test_pdf_with_some_failed_plots(clf_run, tmp_path, monkeypatch):
 def test_pdf_when_no_plot_can_be_generated(clf_run, tmp_path, monkeypatch):
     all_failing(monkeypatch)
     report = clf_run[2]
-    path = report.save_pdf_report(tmp_path)
+    path = report.save_report(tmp_path)[0]
     viz = report.last_visualizations
     assert len(viz) > 0 and not viz.succeeded
     assert path.exists() and pdf_images(path) == 0
@@ -356,7 +356,7 @@ def test_pdf_falls_back_to_text_when_an_image_cannot_be_embedded(tmp_path):
 
 def test_per_model_pdf_includes_its_plots(fitted_clf_result, tmp_path):
     r = fitted_clf_result
-    path = r.save_pdf_report(str(tmp_path))
+    path = r.save_report(str(tmp_path))[0]
     viz = r.last_visualizations
     keys = {x.key.split(":")[0] for x in viz.succeeded}
     assert {"clf_confusion", "clf_roc", "clf_pr", "clf_calibration", "feature_importance"} <= keys
@@ -365,7 +365,7 @@ def test_per_model_pdf_includes_its_plots(fitted_clf_result, tmp_path):
 
 def test_per_model_pdf_survives_failing_plots(fitted_clf_result, tmp_path, monkeypatch):
     all_failing(monkeypatch)
-    path = fitted_clf_result.save_pdf_report(str(tmp_path))
+    path = fitted_clf_result.save_report(str(tmp_path))[0]
     assert path.exists() and pdf_images(path) == 0
 
 
@@ -373,7 +373,7 @@ def test_save_results_keeps_the_model_when_the_pdf_fails(fitted_clf_result, tmp_
     def broken(self, *a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(ClassificationResults, "save_pdf_report", broken)
+    monkeypatch.setattr(ClassificationResults, "save_report", broken)
     fitted_clf_result.save_results(str(tmp_path))
     (folder,) = tmp_path.iterdir()
     assert any(p.suffix == ".joblib" for p in folder.iterdir())
@@ -392,7 +392,7 @@ def test_visualization_does_not_modify_results(clf_run, tmp_path):
     board = report.leaderboard.copy()
     summary = report.summary.copy()
     arrays = [(id(r.target_test), id(r._pred_test)) for r in results]
-    report.save_pdf_report(tmp_path)
+    report.save_report(tmp_path)[0]
     best = [r for r in results if r.fold_sizes is not None][0]
     best_view = VisualizationContext.from_experiment(report).best
     assert best_view.y_true is report._best_per_model[best_view.name].target_test  # no copy
@@ -497,14 +497,14 @@ def test_figures_are_released_and_pyplot_is_untouched(reg_run, monkeypatch):
 
 
 def test_no_temporary_files_are_left(tmp_path, reg_run):
-    reg_run[2].save_pdf_report(tmp_path)
+    reg_run[2].save_report(tmp_path)[0]
     assert sorted(p.suffix for p in tmp_path.iterdir()) == [".pdf"] * len(list(tmp_path.glob("*.pdf")))
     assert not list(tmp_path.glob("*.part"))
 
 
 def test_images_are_released_after_the_pdf_is_written(tmp_path, reg_run):
     report = reg_run[2]
-    report.save_pdf_report(tmp_path)
+    report.save_report(tmp_path)[0]
     kept = report.last_visualizations
     assert kept.succeeded and all(r.image is None for r in kept)  # statuses kept, PNG bytes dropped
 
@@ -554,7 +554,7 @@ def test_feature_research_pdf_survives_a_failing_chart(tmp_path, monkeypatch):
         raise RuntimeError("chart broke")
 
     monkeypatch.setattr(FeatureResearch, "plot_importance", broken)
-    research = FeatureResearch(X, y, cv=3)
-    path = research.save_pdf_report(tmp_path, model=DecisionTreeClassifier(random_state=0), probe=False)
+    research = FeatureResearch(X, y, cv=3, model=DecisionTreeClassifier(random_state=0))
+    path = research.save_report(tmp_path)[0]
     assert path.exists() and "chart broke" in pdf_text(path)
 

@@ -14,7 +14,7 @@ pip install "fitfleet[postgres]"  # + postgres_set() (psycopg)
 
 ```python
 import fitfleet
-from fitfleet import Classification, FilteringCriteriaClassification
+from fitfleet import Classification, FilteringCriteriaClassification, ReportFormat
 
 with Classification() as run:
     run.set(X, y, [RandomForestClassifier(), SVC()])
@@ -90,7 +90,8 @@ fitfleet log runs/<date_time>          # what passed, failed or was skipped, whe
 scikit-learn class name, or an import path like `xgboost.XGBClassifier`), a hyper-parameter grid, preprocessing,
 optional feature selection and the validation. Each run writes a new `runs/<date_time>/` folder with
 `leaderboard.csv` (every configuration, best first; ties go to fewer features), a copy of the config, and the
-top `keep` models, each in its own folder with `model.joblib` and a PDF report.
+top `keep` models, each in its own folder with `model.joblib` and a report. The reports are PDFs by default;
+`[output] report_format = "html"` writes them as HTML files instead, and `"dual"` writes both.
 
 ## Execution tracking
 
@@ -99,7 +100,7 @@ FAILED, was SKIPPED or CANCELLED and, for a failure, a plain-language reason, th
 location (`file.py:line in function`, inside the worker process for training tasks) and the full traceback.
 `fitfleet run` prints one line per stage and an execution summary at the end (`-v` adds tracebacks), and
 the run folder gets `execution_<id>.log` (developer log), `.jsonl` (live JSON events), `.json` and
-`_summary.txt`; the experiment PDF gets an Execution Summary section.
+`_summary.txt`; the experiment report gets an Execution Summary section.
 
 ```
 fitfleet log runs/<date_time>                       # summary + stage tree
@@ -109,12 +110,12 @@ fitfleet log runs/<date_time> --details "Load data" # everything about one stage
 ```
 
 Filters: `--status`, `--stage`, `--module`, `--level`, `--since` / `--until`, `--error-type`,
-`--execution-id`; `--json` for scripts. In Python, a run has three log properties, each
-with the summary and the stage tree: `run.execution_log` (text), `run.save_pdf_log` and
-`run.save_json_log` (written into `log_dir`, set in the constructor:
-`Classification(log_dir="reports")`). `save_pdf_report()` adds the log to its PDF and writes the
-log PDF next to it.
-See [docs/execution_tracking.md](docs/execution_tracking.md).
+`--execution-id`; `--json` for scripts. In Python, a run has four log properties, each
+with the summary and the stage tree: `run.execution_log` (text), `run.save_pdf_log`, `run.save_html_log`
+and `run.save_json_log` (written into `log_dir`, set in the constructor:
+`Classification(log_dir="reports")`). `save_report()` adds the log to the
+report as its Execution Summary section; use `run.save_pdf_log` or `run.save_html_log` for a separate log file.
+See [docs/execution_tracking.md](https://github.com/shaizae/fitfleet/blob/master/docs/execution_tracking.md).
 
 ## Search smarter than every combination
 
@@ -158,16 +159,18 @@ report.leaderboard                        # DataFrame: every configuration, best
 report.summary                            # DataFrame: per model - configurations, best / mean / std / worst, ...
 report.best                               # the best configuration's row
 report.save_csv("out")                    # out/leaderboard.csv + out/summary.csv
-report.save_pdf_report("out")             # out/experiment_report_<date>.pdf
+report.save_report("out")                 # out/experiment_report_<date>.pdf (ReportFormat.pdf is the default)
+report.save_report("out", ReportFormat.html)  # out/experiment_report_<date>.html: the same report, one file
+report.save_report("out", ReportFormat.dual)  # both files, from one rendering of the plots
 report.roc_curves()                       # classification: {model: (fpr, tpr, auc)}, best config per model
 report.plot_roc_curves()
 ```
 
-`fitfleet run` writes `summary.csv` and the experiment PDF into the run folder too.
+`fitfleet run` writes `summary.csv` and the experiment report into the run folder too.
 
-### Plots and the PDF reports
+### Plots and the PDF / HTML reports
 
-`save_pdf_report` draws every plot that applies to the run and puts all of them in the PDF. The sections are:
+`save_report` draws every plot that applies to the run and puts all of them in the report. The sections are:
 
 - an executive summary, the configuration and a dataset overview
 - the model ranking and the spread of scores over configurations
@@ -184,21 +187,33 @@ report.plot_roc_curves()
 Each plot comes with an explanation and the values it shows. A last section lists every plot that was
 skipped (not applicable, or not measured, such as memory) or failed.
 
+**HTML reports.** Every report (experiment, per-model, feature research) has a
+`save_report(folder, report_format)` method; `report_format` is a `ReportFormat`
+(`from fitfleet import ReportFormat`): `ReportFormat.pdf` (the default),
+`ReportFormat.html` or `ReportFormat.dual` (both files). The HTML is the same report: the same sections and numbering, tables, plots,
+explanations, appendix and execution log. Both formats are built from the same content, so they always
+match. The HTML is one self-contained file: the plots are embedded, nothing is loaded from the network, so
+you can open it in any browser, attach it to an email or archive it. It adds a table of contents, and when
+printed it starts a new page wherever the PDF does. `ReportFormat.dual` draws the plots only once for
+both files; the strings `"pdf"`, `"html"` and `"dual"` work too. `result.save_results(folder, ReportFormat.dual)`
+saves the model with both reports. `save_report` returns the paths it wrote, PDF first.
+
 **Plotting can never stop an experiment.** Each plot is drawn in its own error boundary
 (SUCCESS / SKIPPED / FAILED, logged on the `fitfleet.visualization` logger). `fitfleet run` saves the
-models first and writes the PDFs on a background thread. A failing plot or PDF is logged as a warning, and
-the run still finishes with its leaderboard and models.
+models first and writes the reports on a background thread. A failing plot, PDF or HTML report is logged as
+a warning, and the run still finishes with its leaderboard and models.
 
 ```python
 viz = report.visualize()                  # every plot, without a PDF; never raises
 print(viz.summary())                      # "21 generated, 3 skipped, 0 failed"
 viz.save_images("out/plots")              # one PNG per generated plot
 viz.failed, viz.skipped                   # records with the reason / traceback
-best[0].save_pdf_report("out")            # per-model report (confusion, ROC, residuals, importance, ...)
+best[0].save_report("out")                # per-model PDF report (confusion, ROC, residuals, importance, ...)
+best[0].save_report("out", ReportFormat.html)  # the same per-model report as HTML
 ```
 
 The research behind the choice of plots, the architecture, and how to add a plot type are in
-[docs/visualization.md](docs/visualization.md).
+[docs/visualization.md](https://github.com/shaizae/fitfleet/blob/master/docs/visualization.md).
 
 ## Feature research
 
@@ -208,7 +223,7 @@ choosing them. The task is guessed from `y` (or pass `task="classification"` / `
 ```python
 from fitfleet import FeatureResearch
 
-research = FeatureResearch(X, y, cv=5)
+research = FeatureResearch(X, y, cv=5, model=model)  # model: optional, default a random forest
 research.missing_report()               # missing values per column
 research.constant_features(0.99)        # constant / quasi-constant columns
 research.cardinality()                  # distinct values; flags id-like columns
@@ -220,17 +235,20 @@ research.leakage_check(0.98)            # features that alone score suspiciously
 research.correlation_matrix()           # feature x feature (Spearman by default)
 research.high_correlation_pairs(0.9)    # `drop` = the less informative of each pair
 research.vif()                          # multicollinearity
-research.model_importance(model)        # feature_importances_ / |coef_|
-research.permutation_importance(model)  # score drop on held-out folds, any model
-research.random_probe(model)            # does each feature beat pure-noise columns?
+research.model_importance()             # feature_importances_ / |coef_|
+research.permutation_importance()       # score drop on held-out folds, any model
+research.random_probe()                 # does each feature beat pure-noise columns?
 research.report()                       # one row per feature, every score + mean rank
 X = X.drop(columns=research.recommend(probe=True).index)   # constant / id / missing / redundant / noise
-research.save_pdf_report("reports")     # all of the above in one PDF, with charts
+research.save_report("reports")         # all of the above in one PDF, with charts
+research.save_report("reports", ReportFormat.html)  # the same report as one HTML file (.dual: both)
 ```
 
-`save_pdf_report` writes `feature_research_<date>.pdf`: overview and target balance, columns to drop and
+`save_report` writes `feature_research_<date>.pdf` (`ReportFormat.html`: `.html`): overview and target balance, columns to drop and
 possible leakage, the feature ranking, a permutation-importance chart (with the best noise column), data
-quality, correlated pairs, VIF and a correlation heatmap. The charts are also available on their own:
+quality, correlated pairs, VIF and a correlation heatmap. It trains the instance's `model` and reads its
+thresholds from the instance: `research.correlation_threshold` (0.9), `research.missing_threshold` (0.5)
+and `research.leakage_threshold` (0.98). The charts are also available on their own:
 `research.plot_importance()`, `research.plot_correlation()`.
 
 A feature is called `noise` only when it beats the random noise columns on neither permutation importance
@@ -336,6 +354,10 @@ docker compose down
 ```
 
 
+## Changes
+
+What changed in each version, including breaking changes: [CHANGELOG.md](https://github.com/shaizae/fitfleet/blob/master/CHANGELOG.md).
+
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](https://github.com/shaizae/fitfleet/blob/master/LICENSE).

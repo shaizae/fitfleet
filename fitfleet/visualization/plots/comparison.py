@@ -175,6 +175,13 @@ def _sensitivity(ctx, name):
         metrics[f"{model} best {name}"] = f"{values[top]} ({metric} {best[top]:.4f})"
         drawn.append(model)
     need(drawn, f"no model tried more than one value of {name}")
+    # Autoscale would stretch a difference in the 5th decimal over the whole axis, so a flat curve
+    # looks steep. Keep at least ~1% of the score's size visible.
+    low, high = ax.dataLim.y0, ax.dataLim.y1
+    min_span = max(0.01 * max(abs(low), abs(high)), 1e-3)
+    if high - low < min_span:
+        mid = (low + high) / 2
+        ax.set_ylim(mid - min_span / 2, mid + min_span / 2)
     ax.set_xlabel(name)
     ax.set_ylabel(f"{metric} ({ctx.direction})")
     ax.set_title(f"{metric} vs {name}: best and mean over the other settings")

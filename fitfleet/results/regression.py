@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import datetime
-import os
 from collections.abc import Iterator
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -55,6 +52,20 @@ class RegressionResults(BaseResults):
     def rmse(self) -> float:
         """Root mean squared error."""
         return self._rmse
+
+    def _extra_metric_functions(self):
+        """Robust and worst-case errors, percentage error and bias, next to R² / MAE / MSE / RMSE."""
+        from sklearn.metrics import (explained_variance_score, max_error, mean_absolute_percentage_error,
+                                     median_absolute_error)
+        y = np.asarray(self._target_test, dtype=float)
+        p = np.asarray(self._pred_test, dtype=float)
+        out = [("explained_variance", lambda: explained_variance_score(y, p)),
+               ("median_ae", lambda: median_absolute_error(y, p)),
+               ("max_error", lambda: max_error(y, p))]
+        if not np.any(y == 0):  # MAPE divides by the target
+            out.append(("mape", lambda: mean_absolute_percentage_error(y, p)))
+        out.append(("mean_residual", lambda: float(np.mean(y - p))))
+        return out
 
     def predict(self) -> None:
         """Predict features_test with self.model, then evaluate()."""
@@ -114,6 +125,12 @@ class RegressionResults(BaseResults):
         yield f"MSE      : {self.mse:.4f}"
         yield f"RMSE     : {self.rmse:.4f}"
         yield f"Validation type: {self.validation}"
+        extra = self.extra_metrics
+        if extra:
+            yield ""
+            yield "Additional metrics (not used for ranking)"
+            for name, value in extra.items():
+                yield f"  {name:<18}: {value:.4f}"
 
     def report_matrix(self) -> str:
         """The metrics as a two-column text table."""
@@ -126,16 +143,9 @@ class RegressionResults(BaseResults):
             f"{'RMSE':<20}{self.rmse:.6f}"
         )
 
-    def save_pdf_report(self, filename: str) -> Path:
-        """Write a timestamped PDF report into the folder `filename` and return its path.
-
-        Metrics, then every applicable plot (actual vs predicted, residual diagnostics, error by
-        target range, feature importance when the model is fitted), each generated in isolation:
-        a plot that fails or does not apply is listed in the appendix instead of stopping the report."""
-        if self._pred_test is None:
-            raise ValueError("No predictions available")
-        path = os.path.join(filename, f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.pdf")
-        return self._build_pdf_report(path, f"Regression Report - {self.name}")
+    def _report_title(self) -> str:
+        """The title of this result's PDF / HTML report."""
+        return f"Regression Report - {self.name}"
 
     def __str__(self) -> str:
         """The report lines followed by the metrics table."""

@@ -112,10 +112,11 @@ def annotate_heatmap(ax, values, fmt: str, vmax: float | None = None) -> None:
     """Write each cell's value in ink that stays readable on the sequential ramp."""
     import numpy as np
     values = np.asarray(values, dtype=float)
-    top = np.nanmax(values) if vmax is None else vmax
+    # Match the colour scale imshow uses: 0..vmax when given, else the data's own min..max (auto-scaled).
+    low, top = (np.nanmin(values), np.nanmax(values)) if vmax is None else (0.0, vmax)
     for (i, j), v in np.ndenumerate(values):
         if np.isnan(v):
             continue
-        dark = top > 0 and v / top > 0.55
+        dark = top > low and (v - low) / (top - low) > 0.55
         ax.text(j, i, format(v, fmt), ha="center", va="center", fontsize=7,
                 color="#ffffff" if dark else INK)

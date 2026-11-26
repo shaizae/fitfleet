@@ -143,18 +143,18 @@ def search_features_and_parameters():
 def feature_research():
     """Score the features before training, drop the useless ones, then train on the rest."""
     X, y = load_patients()
-    research = FeatureResearch(X, y, random_state=0)  # the task (regression) is guessed from y
+    # the task (regression) is guessed from y; `model` is what the importance methods and the report train
+    research = FeatureResearch(X, y, random_state=0, model=RandomForestRegressor(random_state=0))
 
     print(research.univariate_scores())         # how strongly each feature alone relates to y
     print(research.high_correlation_pairs(0.9))  # pairs of features that carry the same information
     print(research.report())                     # one row per feature, every score + a mean rank (1 = best)
 
     # The features it recommends dropping, with the reason for each one.
-    to_drop = research.recommend(correlation_threshold=0.9, probe=True,
-                                 model=RandomForestRegressor(random_state=0))
+    to_drop = research.recommend(correlation_threshold=0.9, probe=True)
     print(to_drop)
 
-    research.save_pdf_report(REPORTS, model=RandomForestRegressor(random_state=0))  # everything in one PDF
+    research.save_report(REPORTS)  # everything in one PDF
 
     # Train only on the features worth keeping.
     with Regression() as run:
@@ -176,13 +176,13 @@ def experiment_report():
 
         # The whole run: summary, model comparison, confusion matrices, ROC, per-fold scores, runtime...
         report = run.experiment_report()
-        print(report.save_pdf_report(REPORTS))   # prints the PDF's path
+        print(report.save_report(REPORTS)[0])   # prints the PDF's path
         print(report.last_visualizations.summary())  # e.g. "23 generated, 3 skipped, 0 failed"
 
 
 
         # Only the winning model.
-        print(best[0].save_pdf_report(REPORTS))
+        print(best[0].save_report(REPORTS)[0])
 
 
 # ============================================================================ 5. execution logs

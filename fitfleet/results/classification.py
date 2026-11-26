@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import datetime
-import os.path
 from collections.abc import Iterator
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
@@ -59,6 +56,52 @@ class ClassificationResults(BaseResults):
     def f1(self) -> float:
         """F1 score averaged over the classes, weighted by their support."""
         return self._f1
+
+    def _proba_classes(self) -> np.ndarray | None:
+        """The class each predict_proba column belongs to, or None if that can't be told."""
+        proba, y = self._predict_score, self._target_test
+        if proba is None or y is None or np.ndim(proba) != 2:
+            return None
+        k = np.shape(proba)[1]
+        try:
+            classes = getattr(self.model, "classes_", None)  # a Pipeline delegates to its final step
+        except Exception:  # noqa: BLE001 - unfitted models may raise anything here
+            classes = None
+        if classes is not None and len(classes) == k:
+            return np.asarray(classes)
+        seen = np.unique(y)
+        if len(seen) == k:
+            return seen
+        if np.issubdtype(seen.dtype, np.integer) and seen.min() >= 0 and seen.max() < k:
+            return np.arange(k)  # label-encoded targets: column i = class i (aligned by the workers)
+        return None
+
+    def _extra_metric_functions(self):
+        """Imbalance-robust and chance-corrected scores; probability scores when predict_proba exists."""
+        from sklearn.metrics import (average_precision_score, balanced_accuracy_score, brier_score_loss,
+                                     cohen_kappa_score, log_loss, matthews_corrcoef, roc_auc_score)
+        y, p = self._target_test, self._pred_test
+        macro = {"average": "macro", "zero_division": 0}
+        out = [("balanced_accuracy", lambda: balanced_accuracy_score(y, p)),
+               ("macro_precision", lambda: precision_score(y, p, **macro)),
+               ("macro_recall", lambda: recall_score(y, p, **macro)),
+               ("macro_f1", lambda: f1_score(y, p, **macro)),
+               ("mcc", lambda: matthews_corrcoef(y, p)),
+               ("cohen_kappa", lambda: cohen_kappa_score(y, p))]
+        classes = self._proba_classes()
+        if classes is None:
+            return out
+        proba = np.asarray(self._predict_score, dtype=float)
+        if len(classes) == 2:
+            positive, score = np.asarray(y) == classes[1], proba[:, 1]
+            out += [("roc_auc", lambda: roc_auc_score(positive, score)),
+                    ("average_precision", lambda: average_precision_score(positive, score)),
+                    ("brier", lambda: brier_score_loss(positive, score))]
+        else:
+            out.append(("roc_auc_ovr", lambda: roc_auc_score(y, proba, multi_class="ovr", average="macro",
+                                                             labels=classes)))
+        out.append(("log_loss", lambda: log_loss(y, proba, labels=classes)))
+        return out
 
     def predict(self) -> None:
         """Predict features_test (with probabilities when the model has predict_proba), then evaluate()."""
@@ -136,18 +179,9 @@ class ClassificationResults(BaseResults):
         if show:
             plt.show()
 
-    def save_pdf_report(self, filename: str) -> Path:
-        """Write a timestamped PDF report into the folder `filename` and return its path.
-
-        Metrics and sklearn's per-class report, then every applicable plot (confusion matrix,
-        per-class scores, ROC / precision-recall / calibration when probabilities exist, feature
-        importance when the model is fitted), each generated in isolation: a plot that fails or
-        does not apply is listed in the report's appendix instead of stopping the report."""
-        if self._pred_test is None:
-            raise ValueError("No predictions available")
-        path = os.path.join(filename,
-                            f"report_{self.name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pdf")
-        return self._build_pdf_report(path, f"Classification Report - {self.name}")
+    def _report_title(self) -> str:
+        """The title of this result's PDF / HTML report."""
+        return f"Classification Report - {self.name}"
 
     def _report_details(self, pdf) -> None:
         """sklearn's per-class text report."""
@@ -171,6 +205,12 @@ class ClassificationResults(BaseResults):
         yield f"Recall   : {self.recall:.4f}"
         yield f"F1 Score : {self.f1:.4f}"
         yield f" validation type: {self.validation}"
+        extra = self.extra_metrics
+        if extra:
+            yield ""
+            yield "Additional metrics (not used for ranking)"
+            for name, value in extra.items():
+                yield f"  {name:<18}: {value:.4f}"
 
     def report_matrix(self) -> str:
         """sklearn's per-class classification report as text."""
