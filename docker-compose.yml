@@ -1,8 +1,14 @@
-# A throwaway PostgreSQL for the live test in tests/test_postgres.py.
+# A throwaway PostgreSQL for the live test in tests/test_postgres.py, and a service that runs it.
 #
+# Everything in Docker:
+#   docker compose run --rm --build tests     # starts postgres, runs tests/test_postgres.py
+#   docker compose run --rm tests -k live     # extra args go to pytest
+#   docker compose down
+#
+# Or only the database, with the tests from your own venv (pip install -e ".[dev,postgres]"):
 #   docker compose up -d --wait
 #   $env:FITFLEET_TEST_POSTGRES_URL = "postgresql://postgres:pw@localhost:55432/postgres"   # bash: export ...
-#   pytest tests/test_postgres.py          # needs psycopg: pip install -e ".[dev,postgres]"
+#   pytest tests/test_postgres.py
 #   docker compose down
 #
 # Port 55432 on the host, so it does not clash with a local PostgreSQL on 5432.
@@ -21,3 +27,19 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+
+  tests:
+    profiles: ["tests"]  # `docker compose up` starts only the database
+    build:
+      context: .
+      args:
+        PYTHON_VERSIONS: "3.11 3.13"
+        EXTRAS: "dev,postgres"
+    image: fitfleet-tests-postgres  # not fitfleet-tests, which scripts/docker_test.py builds without psycopg
+    shm_size: 2gb
+    environment:
+      FITFLEET_TEST_POSTGRES_URL: postgresql://postgres:pw@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["tests/test_postgres.py", "-rs"]

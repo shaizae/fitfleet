@@ -320,7 +320,14 @@ python -m benchmarks.bench          # timing / memory benchmark
 ```
 
 The live PostgreSQL test runs only when `FITFLEET_TEST_POSTGRES_URL` is set. `docker-compose.yml` starts a
-throwaway database for it (install `.[postgres]` first):
+throwaway database for it and can run the test in Docker:
+
+```
+docker compose run --rm --build tests   # database + tests/test_postgres.py, all in Docker
+docker compose down
+```
+
+or only the database, with the tests from your own environment (install `.[postgres]` first):
 
 ```
 docker compose up -d --wait

@@ -15,6 +15,8 @@ FROM ghcr.io/astral-sh/uv:0.5.11 AS uv
 
 FROM ubuntu:${UBUNTU_VERSION}
 ARG PYTHON_VERSIONS="3.11 3.13"
+# the pip extras to install; docker-compose.yml adds postgres for the live PostgreSQL test
+ARG EXTRAS="dev"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -38,7 +40,7 @@ COPY . .
 
 # the workflow's install step, once per Python version; the cache mount keeps rebuilds fast
 RUN --mount=type=cache,target=/root/.cache/pip \
-    for v in ${PYTHON_VERSIONS}; do "/venvs/py$v/bin/pip" install -e ".[dev]" || exit 1; done
+    for v in ${PYTHON_VERSIONS}; do "/venvs/py$v/bin/pip" install -e ".[${EXTRAS}]" || exit 1; done
 
 # the workflow's test step for every version in $PYTHON_VERSIONS; extra `docker run` args go to pytest
 ENTRYPOINT ["bash", "-c", "rc=0; for v in $PYTHON_VERSIONS; do echo \"========== ubuntu / Python $v ==========\"; \"/venvs/py$v/bin/python\" -m pytest -q \"$@\" || rc=1; done; exit $rc", "run-tests"]
