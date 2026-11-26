@@ -10,7 +10,7 @@ Stand-alone: give it a feature table and a target, it does not need a Classifica
     research.random_probe()
     print(research.report())
     X = X.drop(columns=research.recommend().index)
-    research.save_pdf_report("reports")         # everything above in one PDF, with charts
+    research.save_report("reports")             # everything above in one PDF, with charts
     research.save_report("reports", ReportFormat.html)  # ... or as one HTML file (.dual: both)
 """
 from __future__ import annotations
@@ -69,6 +69,8 @@ class FeatureResearch:
                   at most 20 distinct values are classes, anything else is regression)
     cv            folds for every cross-validated method (stratified for classification when possible)
     random_state  seed for the folds, the default models, mutual information and the noise probes
+    model         the estimator the importance methods and the report train (default: a random forest);
+                  a method's own `model` argument still wins
 
     The data is kept the same way a Classification / Regression run keeps it: the features in a
     `Features` object (`research.features`) and the target in a `Target` object (`research.targets`,
@@ -79,10 +81,17 @@ class FeatureResearch:
     Statistical methods use the numeric columns only (bools count as numeric) and fill their missing
     values with the column median; `skipped` lists the columns they leave out. The data-quality methods
     (missing_report, constant_features, cardinality) look at every column.
+
+    save_report() reads its thresholds from the instance; change them there, e.g.
+    `research.correlation_threshold = 0.8`.
     """
 
+    correlation_threshold = 0.9  # report: |correlation| at which a pair counts as redundant
+    missing_threshold = 0.5      # report: share of missing values at which a column is dropped
+    leakage_threshold = 0.98     # report: single-feature score at which a column may be a leak
+
     def __init__(self, X: pd.DataFrame | np.ndarray, y, task: str = "auto", cv: int = 5,
-                 random_state: int | None = 42) -> None:
+                 random_state: int | None = 42, model: BaseEstimator | None = None) -> None:
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
         if cv < 2:
@@ -104,6 +113,7 @@ class FeatureResearch:
         self.task = self._guess_task(y) if task == "auto" else task
         self.cv = cv
         self.random_state = random_state
+        self.model = model
 
         X = X.reset_index(drop=True)
         X.columns = [str(c) for c in X.columns]
@@ -225,6 +235,9 @@ class FeatureResearch:
         return KFold(self.cv, shuffle=True, random_state=self.random_state)
 
     def _default_model(self) -> BaseEstimator:
+        """A fresh copy of the instance's `model`, or a random forest."""
+        if self.model is not None:
+            return clone(self.model)
         cls = RandomForestClassifier if self.is_classification else RandomForestRegressor
         return cls(n_estimators=100, random_state=self.random_state, n_jobs=-1)
 
@@ -588,43 +601,26 @@ class FeatureResearch:
                          f"min {y.min():.4g}, max {y.max():.4g}")
         return lines
 
-    @tracked("Feature research PDF report", operation="write the feature research PDF")
-    def save_pdf_report(self, folder: str | Path, model: BaseEstimator | None = None, probe: bool = True,
-                        correlation_threshold: float = 0.9, missing_threshold: float = 0.5,
-                        leakage_threshold: float = 0.98) -> Path:
-        """Write feature_research_<date>.pdf into `folder` and return its path.
-
-        Pages: overview and recommendations (columns to drop, possible leakage); the feature ranking table;
-        the importance chart; data quality (missing, constant, id-like, distributions); correlation (pairs
-        >= correlation_threshold, VIF, heatmap).
-        probe=True compares importances with random noise columns (adds the `noise` drop reason and the
-        noise line on the chart); False uses plain permutation importance. Either way models are trained
-        (`model`, default random forest) once per fold."""
-        return self._write_report(folder, ReportFormat.pdf, model, probe, correlation_threshold,
-                                  missing_threshold, leakage_threshold)[0]
-
     @tracked("Feature research report", operation="write the feature research report")
-    def save_report(self, folder: str | Path, report_format: ReportFormat | str = ReportFormat.pdf,
-                    model: BaseEstimator | None = None, probe: bool = True, correlation_threshold: float = 0.9,
-                    missing_threshold: float = 0.5, leakage_threshold: float = 0.98) -> list[Path]:
+    def save_report(self, folder: str | Path, report_format: ReportFormat | str = ReportFormat.pdf) -> list[Path]:
         """Write feature_research_<date>.<pdf|html> into `folder` and return the paths, PDF first.
 
         report_format: ReportFormat.pdf (default), ReportFormat.html - the same report as one
         self-contained HTML file with the charts embedded - or ReportFormat.dual for both files; the
-        scores and charts are computed once. See save_pdf_report for the contents and arguments."""
-        return self._write_report(folder, ReportFormat.parse(report_format), model, probe, correlation_threshold,
-                                  missing_threshold, leakage_threshold)
-
-    def _write_report(self, folder: str | Path, report_format: ReportFormat, model: BaseEstimator | None,
-                      probe: bool, correlation_threshold: float, missing_threshold: float,
-                      leakage_threshold: float) -> list[Path]:
+        scores and charts are computed once.
+        Pages: overview and recommendations (columns to drop, possible leakage); the feature ranking table;
+        the importance chart; data quality (missing, constant, id-like, distributions); correlation (pairs
+        >= correlation_threshold, VIF, heatmap). Importances are compared with random noise columns
+        (random_probe: the `noise` drop reason and the noise line on the chart), training the instance's
+        `model` once per fold. The thresholds are the instance's correlation_threshold,
+        missing_threshold and leakage_threshold."""
         from fitfleet.visualization.html import write_atomic
+        report_format = ReportFormat.parse(report_format)
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         created = datetime.datetime.now()
         stem = folder / f"feature_research_{created:%Y-%m-%d_%H-%M-%S}"
-        items = self._report_content(model, probe, correlation_threshold, missing_threshold, leakage_threshold,
-                                     created)
+        items = self._report_content(created)
         paths = []
         for fmt in report_format.files:
             path = stem.with_name(f"{stem.name}.{fmt}")
@@ -636,15 +632,15 @@ class FeatureResearch:
             paths.append(path)
         return paths
 
-    def _report_content(self, model: BaseEstimator | None, probe: bool, correlation_threshold: float,
-                        missing_threshold: float, leakage_threshold: float,
-                        created: datetime.datetime) -> list[tuple[str, object]]:
+    def _report_content(self, created: datetime.datetime) -> list[tuple[str, object]]:
         """The report as (kind, payload) items, rendered by _pdf_elements() and _html_page():
         title, p (paragraph), pre (code line), small (small code block), h2, h3, space (points),
         page (page break) and chart ((png bytes, width pt, height pt, name))."""
         numeric = self._require_numeric()
+        correlation_threshold = self.correlation_threshold
+        missing_threshold, leakage_threshold = self.missing_threshold, self.leakage_threshold
 
-        importance = self.random_probe(model) if probe else self.permutation_importance(model)
+        importance = self.random_probe()
         ranking = self.report(importance=False)
         ranking.insert(ranking.columns.get_loc("rank_f_score"), "permutation_importance",
                        importance["importance"])
@@ -653,7 +649,7 @@ class FeatureResearch:
         rank_cols = [c for c in ranking.columns if c.startswith("rank_")]
         ranking["mean_rank"] = ranking[rank_cols].mean(axis=1)
         ranking = ranking.drop(columns=rank_cols).sort_values("mean_rank")
-        recommended = self._recommend(missing_threshold, correlation_threshold, importance if probe else None)
+        recommended = self._recommend(missing_threshold, correlation_threshold, importance)
         leaks = self.leakage_check(leakage_threshold)
 
         def table(frame: pd.DataFrame | pd.Series, empty: str) -> tuple[str, str]:
@@ -689,8 +685,7 @@ class FeatureResearch:
             ("space", 12), ("h2", "Recommended to drop"),
             ("p", f"constant / id-like / more than {missing_threshold:.0%} missing / |correlation| "
                   f">= {correlation_threshold} with a more informative feature"
-                  + (" / beats random noise columns on neither permutation importance nor mutual information"
-                     if probe else "")),
+                  " / beats random noise columns on neither permutation importance nor mutual information"),
             table(recommended, "Nothing to drop."),
             ("space", 12), ("h2", "Possible leakage"),
             ("p", f"Features that alone reach a cross-validated {self._default_scoring()} of "

@@ -351,17 +351,30 @@ def test_overview_lines_show_original_labels():
     assert any("setosa: 50 (33%)" in line for line in lines)
 
 
-@pytest.mark.parametrize("probe", [True, False])
-def test_save_pdf_report(tmp_path, probe):
+def test_save_report_pdf(tmp_path):
     X, y = crafted_classification()
-    path = FeatureResearch(X, y).save_pdf_report(tmp_path / "out", model=small_model(), probe=probe)
+    path = FeatureResearch(X, y, model=small_model()).save_report(tmp_path / "out")[0]
     assert path.parent == tmp_path / "out"
     assert path.name.startswith("feature_research_") and path.suffix == ".pdf"
     assert path.read_bytes()[:4] == b"%PDF"
     assert path.stat().st_size > 10_000  # charts are embedded
 
 
-def test_save_pdf_report_single_feature(tmp_path):
+def test_save_report_pdf_single_feature(tmp_path):
     Xr, yr = make_regression(60, 1, random_state=RANDOM_STATE)
-    path = FeatureResearch(Xr, yr).save_pdf_report(tmp_path, model=None, probe=False)
+    path = FeatureResearch(Xr, yr).save_report(tmp_path)[0]
     assert path.exists()
+
+
+def test_save_report_takes_its_settings_from_the_instance(tmp_path, monkeypatch):
+    X, y = crafted_classification()
+    model = small_model()
+    research = FeatureResearch(X, y, model=model)
+    research.correlation_threshold = 0.42
+    assert research._default_model() is not model and research._default_model().get_params() == model.get_params()
+    trained = []
+    original = FeatureResearch._default_model
+    monkeypatch.setattr(FeatureResearch, "_default_model", lambda self: trained.append(1) or original(self))
+    (path,) = research.save_report(tmp_path, "html")
+    assert trained  # the instance's model is what the report trains
+    assert "&gt;= 0.42" in path.read_text(encoding="utf-8")  # and its threshold is the one reported

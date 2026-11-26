@@ -171,16 +171,16 @@ class TestPlots:
         assert show_calls == []
 
 
-class TestSavePdfReport:
+class TestSaveReport:
     def test_without_prediction_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No predictions available"):
-            ClassificationResults(None).save_pdf_report(str(tmp_path))
+            ClassificationResults(None).save_report(str(tmp_path))[0]
 
     def test_creates_pdf_without_probabilities(self, tmp_path):
         # the with-probabilities report is covered by test_visualization.py::test_per_model_pdf_includes_its_plots
         r = fitted(3)
         r._predict_score = None  # report without the ROC section
-        r.save_pdf_report(str(tmp_path))
+        r.save_report(str(tmp_path))[0]
         pdfs = list(tmp_path.glob("report_LogisticRegression_*.pdf"))
         assert len(pdfs) == 1 and pdfs[0].stat().st_size > 1000
 

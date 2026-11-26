@@ -8,10 +8,11 @@ version is 0.x, a minor release may contain breaking changes, and they are liste
 
 ### Added
 - HTML reports with the same content as the PDFs, as one self-contained file (plots embedded):
-  `save_html_report()` on the experiment report, on every result and on `FeatureResearch`, plus
-  `run.save_html_log`. `save_report(folder, "pdf" | "html" | "both")` writes several formats from one
-  rendering of the plots, and `save_results(folder, formats=...)` passes the choice on. In a config file,
-  `[output] report_format = "pdf" | "html" | "both"` (default `"pdf"`).
+  `save_report(folder, report_format)` on the experiment report, on every result and on `FeatureResearch`,
+  with the new `ReportFormat` enum: `ReportFormat.pdf` (default), `.html` or `.dual` (both files, from one
+  rendering of the plots). `save_results(folder, report_format)` passes it on, and `run.save_html_log`
+  writes the execution log as HTML. In a config file, `[output] report_format = "pdf" | "html" | "dual"`
+  (default `"pdf"`).
 - `postgres_set()`: read the features and the target with two SQL queries from PostgreSQL
   (`pip install "fitfleet[postgres]"`). A `docker-compose.yml` starts a throwaway database for the live test.
 - Additional metrics in every report and in `print(result)`, computed from the out-of-sample predictions
@@ -28,12 +29,21 @@ version is 0.x, a minor release may contain breaking changes, and they are liste
   experiment PDF's leaderboard has a fit-time column.
 
 ### Changed
-- `save_pdf_report()` (experiment and per-model) no longer writes a separate `execution-log_<id>_<time>.pdf`
+- The experiment and per-model reports no longer write a separate `execution-log_<id>_<time>.pdf`
   next to the report. The execution log is still in the report as its "Execution Summary" section; use
   `run.save_pdf_log` to write it as its own file.
 - `fitfleet.utils` is now a package split by topic. `from fitfleet.utils import ...` works as before.
 
 ### Removed
+- `save_pdf_report()` on the experiment report, on every result and on `FeatureResearch`. Use
+  `save_report(folder)`: it writes the same PDF (`ReportFormat.pdf` is the default) and returns a list of
+  paths, so `x.save_pdf_report(folder)` becomes `x.save_report(folder)[0]`. The `FeatureResearch` stage is
+  now named "Feature research report".
+- The report arguments. `save_report(folder, report_format)` takes nothing else and reads the rest from
+  the instance: `FeatureResearch(X, y, model=...)` (the model every importance method and the report
+  train when none is passed), `research.correlation_threshold` / `.missing_threshold` / `.leakage_threshold`
+  (0.9 / 0.5 / 0.98) and `report.top` (20 leaderboard rows). The feature research report always compares
+  with random noise columns (the old `probe=True` default).
 - The deprecated aliases from before 0.2: `run.fetchers` (use `run.features`), `fetcher_selection()`
   (use `feature_selection()`) and `brut_force_features()` (use `brute_force_features()`).
 

@@ -183,14 +183,14 @@ def test_save_html_log(tmp_path, iris_data):
 def test_feature_research_html_matches_its_pdf(tmp_path):
     d = load_iris()
     research = FeatureResearch(pd.DataFrame(d.data, columns=d.feature_names), pd.Series(d.target),
-                               random_state=0, cv=3)
-    pdf_path, html_path = research.save_report(tmp_path, ReportFormat.dual, probe=False)
+                               random_state=0, cv=3, model=DecisionTreeClassifier(random_state=0))
+    pdf_path, html_path = research.save_report(tmp_path, ReportFormat.dual)
     assert pdf_path.suffix == ".pdf" and html_path.suffix == ".html" and pdf_path.stem == html_path.stem
     page = html_path.read_text(encoding="utf-8")
     for heading in ("Recommended to drop", "Possible leakage", "Feature ranking", "Data quality", "Correlation"):
         assert f">{heading}</h2>" in page
     assert _images(page) == 2  # importance chart and correlation heatmap, as in the PDF
-    assert [p.suffix for p in research.save_report(tmp_path, ReportFormat.html, probe=False)] == [".html"]
+    assert [p.suffix for p in research.save_report(tmp_path, ReportFormat.html)] == [".html"]
 
 
 # ------------------------------------------------------------------ fitfleet run

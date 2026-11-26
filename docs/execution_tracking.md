@@ -59,7 +59,7 @@ print(run.execution_log)      # the whole log: summary + stage tree
 ```
 
 `FeatureResearch`: `single_feature_score`, `model_importance`, `permutation_importance`,
-`random_probe`, `leakage_check`, `report`, `recommend` and `save_pdf_report` become stages when a
+`random_probe`, `leakage_check`, `report`, `recommend` and `save_report` become stages when a
 tracker is active. Without one they are plain method calls.
 
 ### `fitfleet predict`
@@ -220,9 +220,11 @@ These three are the only Python API for outputting a log. For a log on disk (a r
 **Execution Summary** section (no separate execution-log file is written; `run.save_pdf_log`
 saves the execution report on its own, e.g. to see what failed):
 
-* `run.experiment_report().save_pdf_report(folder)`
-* `result.save_pdf_report(folder)` for the results `filter_by()` / `refit()` return
-* `FeatureResearch.save_pdf_report(...)` when it runs inside a tracked execution (section only)
+* `run.experiment_report().save_report(folder)`
+* `result.save_report(folder)` for the results `filter_by()` / `refit()` return
+* `FeatureResearch.save_report(...)` when it runs inside a tracked execution (section only)
+
+in every `ReportFormat` (PDF, HTML or both).
 
 A saved (pickled) result does not keep its tracker.
 

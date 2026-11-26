@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
@@ -179,15 +178,6 @@ class ClassificationResults(BaseResults):
         plt.legend()
         if show:
             plt.show()
-
-    def save_pdf_report(self, filename: str) -> Path:
-        """Write a timestamped PDF report into the folder `filename` and return its path.
-
-        Metrics and sklearn's per-class report, then every applicable plot (confusion matrix,
-        per-class scores, ROC / precision-recall / calibration when probabilities exist, feature
-        importance when the model is fitted), each generated in isolation: a plot that fails or
-        does not apply is listed in the report's appendix instead of stopping the report."""
-        return self.save_report(filename, "pdf")[0]
 
     def _report_title(self) -> str:
         """The title of this result's PDF / HTML report."""

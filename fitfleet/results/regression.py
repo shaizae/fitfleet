@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -143,14 +142,6 @@ class RegressionResults(BaseResults):
             f"{'MSE':<20}{self.mse:.6f}\n"
             f"{'RMSE':<20}{self.rmse:.6f}"
         )
-
-    def save_pdf_report(self, filename: str) -> Path:
-        """Write a timestamped PDF report into the folder `filename` and return its path.
-
-        Metrics, then every applicable plot (actual vs predicted, residual diagnostics, error by
-        target range, feature importance when the model is fitted), each generated in isolation:
-        a plot that fails or does not apply is listed in the appendix instead of stopping the report."""
-        return self.save_report(filename, "pdf")[0]
 
     def _report_title(self) -> str:
         """The title of this result's PDF / HTML report."""

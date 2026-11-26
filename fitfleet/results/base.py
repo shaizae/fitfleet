@@ -271,7 +271,13 @@ class BaseResults(ABC):
         report_format: ReportFormat.pdf (default), ReportFormat.html - the same report (metrics, every
         plot with its explanation, the appendix and the run's execution log) as one self-contained
         HTML file with the plots embedded - or ReportFormat.dual for both files, from one rendering
-        of the plots."""
+        of the plots.
+
+        Metrics, then every applicable plot (classification: confusion matrix, per-class scores, ROC /
+        precision-recall / calibration when probabilities exist; regression: actual vs predicted,
+        residual diagnostics, error by target range; feature importance when the model is fitted),
+        each generated in isolation: a plot that fails or does not apply is listed in the report's
+        appendix instead of stopping the report."""
         report_format = ReportFormat.parse(report_format)
         if self._pred_test is None:
             raise ValueError("No predictions available")
@@ -332,11 +338,6 @@ class BaseResults(ABC):
     @abstractmethod
     def report_lines(self) -> Iterator[str]:
         """Yield the lines of the text report ("" marks a blank line)."""
-        ...
-
-    @abstractmethod
-    def save_pdf_report(self, filename: str) -> None:
-        """Write a PDF report into the folder `filename` (with the run's execution log as a section)."""
         ...
 
     @abstractmethod

@@ -239,7 +239,8 @@ figures (small multiples, metric panels) span the full width.
 
 ### HTML reports
 
-`save_html_report()` (and `save_report(folder, "html" | "both")`) writes the same report as HTML.
+`save_report(folder, ReportFormat.html)` writes the same report as HTML, `ReportFormat.dual` writes both
+files and `ReportFormat.pdf` is the default.
 `PdfReport` records its content as plain data; `PdfReport.sections()` decides which sections appear,
 their numbers and where a new page starts, and `pdf.py` holds the shared cell formatting, figure
 lines and appendix texts. The PDF (`_story`) and the HTML (`html.render_report`) are both built from
