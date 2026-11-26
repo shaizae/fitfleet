@@ -1,8 +1,7 @@
-"""Small function decorators and warnings used across the package."""
+"""Small function decorators used across the package."""
 from __future__ import annotations
 
 import gc
-import warnings
 from functools import wraps
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
@@ -32,8 +31,3 @@ def force_gc(func: Callable[P, R]) -> Callable[P, R]:
                 gc.collect(2)
 
     return wrapper
-
-
-def deprecated(old: str, new: str) -> None:
-    """Warn that `old` is deprecated in favour of `new`, pointing at the caller's caller."""
-    warnings.warn(f"{old} is deprecated, use {new}", DeprecationWarning, stacklevel=3)

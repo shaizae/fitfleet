@@ -295,7 +295,7 @@ The saved model includes the run's scaling, polynomial features and feature subs
 Models saved before 0.2 (a bare estimator) still load.
 
 Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_selection()`,
-`brut_force_features()` -> `brute_force_features()`. The old names still work but warn. Imports moved from
+`brut_force_features()` -> `brute_force_features()`. The old names were removed. Imports moved from
 `external_classes` / `utils` / `results` into the `fitfleet` package.
 
 ## Usage notes

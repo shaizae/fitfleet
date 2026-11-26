@@ -27,7 +27,7 @@ from fitfleet.tracking import TrackedTask, current_stage, execution, stage, trac
 from fitfleet.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from fitfleet.train_data import TrainData, KFoldsTrainData, build_estimator
 from fitfleet.utils import Sound, ValidationType, in_enum, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
-    SharedMemory, deprecated
+    SharedMemory
 from fitfleet.utils.feature_selection import brute_force, fill_missing, select_k_best_columns
 from fitfleet.utils.postgres import read_postgres
 from fitfleet.utils.sound import play_wav
@@ -683,20 +683,6 @@ class BaseML(ABC):
             estimator.fit(X[rows], y[rows])
             result.model = estimator
         return results
-
-    # ------------------------------------------------------------------ old names (deprecated)
-    @property
-    def fetchers(self):
-        deprecated("fetchers", "features")
-        return self.features
-
-    def fetcher_selection(self, algorithm, number_of_features: list[int]):
-        deprecated("fetcher_selection()", "feature_selection()")
-        return self.feature_selection(algorithm, number_of_features)
-
-    def brut_force_features(self):
-        deprecated("brut_force_features()", "brute_force_features()")
-        return self.brute_force_features()
 
 
 def _play_end_sound(sound: Sound):
