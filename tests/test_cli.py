@@ -206,7 +206,7 @@ def test_every_sound_plays_without_error(monkeypatch):
     import wave
     from fitfleet.base import BaseML
     played = []
-    monkeypatch.setattr("fitfleet.base._play_wav", lambda data: played.append(data) or True)
+    monkeypatch.setattr("fitfleet.base.play_wav", lambda data: played.append(data) or True)
     for sound in Sound:
         BaseML.play_sound(sound)
         data = sound.wav_bytes()

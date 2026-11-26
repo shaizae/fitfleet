@@ -1,15 +1,11 @@
-"""Shared memory helpers, enums and small utilities used across the pipeline.
+"""Numpy arrays in named shared memory blocks, shared between the parent and pool workers.
 
-`_ATTACHED` holds the blocks this worker process has already attached to, keyed by
-name. The `_C5` ... `_C7` constants are note frequencies in Hz, and `_PARTIALS` lists
-the (frequency ratio, loudness) pairs that give the notes their bell-like timbre.
+`_ATTACHED` holds the blocks this worker process has already attached to, keyed by name.
 """
 from __future__ import annotations
 
-import gc
 import multiprocessing
 import shutil
-from enum import Enum, StrEnum
 from functools import wraps
 from multiprocessing import shared_memory
 from pathlib import Path
@@ -19,6 +15,9 @@ import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class SharedMemory:
@@ -184,169 +183,6 @@ def features_unpackage(shared_memory: SharedMemory, index: Sequence[int] | np.nd
     if features_index is None:
         return array[index]
     return array[np.ix_(np.asarray(index), np.asarray(features_index))]
-
-
-def in_enum(enum_type: type[Enum], value: Any) -> bool:
-    """`value in enum_type` with Python 3.12+ semantics on every version: True for a
-    member or a member's value, False for anything else (3.11 raises TypeError for non-members)."""
-    try:
-        enum_type(value)
-    except (ValueError, TypeError):
-        return False
-    return True
-
-
-class ValidationType(StrEnum):
-    """How a model was validated."""
-    train_test_split = "train_test_split"
-    k_folds = "k_folds"
-    leave_one_out = "leave_one_out"
-
-
-class FilteringCriteriaClassification(StrEnum):
-    """Metric used to rank and filter classification results."""
-    accuracy = "accuracy"
-    f1 = "f1"
-    recall = "recall"
-    precision = "precision"
-
-    @property
-    def maximize(self) -> bool:
-        """Whether a higher value is better (true for every classification metric)."""
-        return self == FilteringCriteriaClassification.accuracy or self == FilteringCriteriaClassification.f1 or self == FilteringCriteriaClassification.recall or self == FilteringCriteriaClassification.precision
-
-
-class FilteringCriteriaRegression(StrEnum):
-    """Metric used to rank and filter regression results."""
-    mae = "mae"
-    mse = "mse"
-    rmse = "rmse"
-    r2 = "r2"
-
-    @property
-    def maximize(self) -> bool:
-        """Whether a higher value is better (only r2; the error metrics are minimized)."""
-        return self == FilteringCriteriaRegression.r2
-
-
-class Sound(StrEnum):
-    """Sound played when a training object goes out of scope after a finished run.
-
-    none is silent; ping is one soft bell note; double is two rising notes, a happy
-    "ding-ding"; chime is three bell notes ringing into a major chord; success is a quick
-    rising arpeggio ending on a bright chord ("it worked!"); sparkle is a fast, playful
-    twinkling run up high; alarm is a repeated high/low tone that is hard to miss; bell
-    is the terminal bell only.
-    """
-    none = "none"
-    ping = "ping"
-    double = "double"
-    chime = "chime"
-    success = "success"
-    sparkle = "sparkle"
-    alarm = "alarm"
-    bell = "bell"
-
-    @property
-    def notes(self) -> list[tuple[float, float, float]]:
-        """(frequency Hz, start s, length s) per note; notes may overlap and ring together."""
-        return _SOUND_NOTES.get(self, [])
-
-    def wav_bytes(self, rate: int = 44_100) -> bytes:
-        """The sound rendered as an in-memory 16-bit mono WAV file (b"" for none / bell).
-
-        `rate` is the sample rate in Hz. Each note gets a bell / marimba timbre from a few
-        partials, the higher ones dying away faster, with a 4 ms fade-in (no click) and a
-        20 ms fade-out. The mix is normalized to half of full scale for a comfortable volume.
-        """
-        import io
-        import wave
-        notes = self.notes
-        if not notes:
-            return b""
-        total = max(start + length for _, start, length in notes) + 0.05
-        mix = np.zeros(int(total * rate))
-        for freq, start, length in notes:
-            t = np.arange(int(length * rate)) / rate
-            tone = np.zeros_like(t)
-            for k, (ratio, amp) in enumerate(_PARTIALS, start=1):
-                tone += amp * np.sin(2 * np.pi * freq * ratio * t) * np.exp(-t * k / (length * 0.35))
-            attack = np.minimum(1, t / 0.004)
-            release = np.minimum(1, (length - t) / 0.02)
-            begin = int(start * rate)
-            mix[begin:begin + len(t)] += tone * attack * release
-        mix *= 0.5 / np.abs(mix).max()
-        buffer = io.BytesIO()
-        with wave.open(buffer, "wb") as f:
-            f.setnchannels(1)
-            f.setsampwidth(2)
-            f.setframerate(rate)
-            f.writeframes((mix * 32767).astype("<i2").tobytes())
-        return buffer.getvalue()
-
-
-_C5, _E5, _G5, _A5 = 523.25, 659.25, 783.99, 880.00
-_C6, _D6, _E6, _G6, _A6, _C7 = 1046.50, 1174.66, 1318.51, 1567.98, 1760.00, 2093.00
-_PARTIALS = [(1, 1.0), (2, 0.35), (3, 0.12), (4.2, 0.06)]
-
-_SOUND_NOTES: dict[Sound, list[tuple[float, float, float]]] = {
-    Sound.ping: [(_A5, 0, 0.8)],
-    Sound.double: [(_G5, 0, 0.5), (_C6, 0.14, 0.9)],
-    Sound.chime: [(_C6, 0, 1.4), (_E6, 0.15, 1.3), (_G6, 0.30, 1.5)],
-    Sound.success: [(_C5, 0, 0.4), (_E5, 0.09, 0.4), (_G5, 0.18, 0.4), (_C6, 0.27, 0.5),
-                    (_C5, 0.40, 1.3), (_E5, 0.40, 1.3), (_G5, 0.40, 1.3), (_C6, 0.40, 1.5), (_E6, 0.40, 1.5)],
-    Sound.sparkle: [(f, i * 0.06, 0.6) for i, f in enumerate([_C6, _D6, _E6, _G6, _A6, _C7])]
-                   + [(_C7, 0.42, 1.0), (_G6, 0.42, 1.0)],
-    Sound.alarm: [(f, i * 0.2, 0.18) for i, f in enumerate([1200, 800] * 4)],
-}
-
-
-def is_fitted(model: Any) -> bool:
-    """Whether `model` has been fitted, per sklearn's check_is_fitted.
-
-    Objects that aren't sklearn estimators are assumed fitted; the caller knows.
-    """
-    from sklearn.exceptions import NotFittedError
-    from sklearn.utils.validation import check_is_fitted
-    try:
-        check_is_fitted(model)
-        return True
-    except NotFittedError:
-        return False
-    except TypeError:
-        return True
-
-
-def create_path(path: str) -> Path:
-    """Create the folder `path`, including any missing parents, and return it as a Path."""
-    p = Path(path)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-P = ParamSpec("P")
-R = TypeVar("R")
-
-GC_EVERY_N_TASKS = 10
-_tasks_since_gc = 0
-
-
-def force_gc(func: Callable[P, R]) -> Callable[P, R]:
-    """Full garbage collection every GC_EVERY_N_TASKS calls in this process.
-    Collecting after every task can cost more than a small model's fit."""
-    @wraps(func)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        """Call `func`, then count the call and collect garbage when the count is reached."""
-        global _tasks_since_gc
-        try:
-            return func(*args, **kwargs)
-        finally:
-            _tasks_since_gc += 1
-            if _tasks_since_gc >= GC_EVERY_N_TASKS:
-                _tasks_since_gc = 0
-                gc.collect(2)
-
-    return wrapper
 
 
 def cleanup_shared_memory(func: Callable[P, R]) -> Callable[P, R]:

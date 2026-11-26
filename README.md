@@ -9,6 +9,7 @@ every model x feature subset x hyper-parameter combination, scored on the same s
 pip install fitfleet         # from PyPI
 pip install -e .            # the library, from a clone
 pip install -e ".[dev]"     # + test tools
+pip install "fitfleet[postgres]"  # + postgres_set() (psycopg)
 ```
 
 ```python
@@ -57,6 +58,23 @@ with Classification() as run:
 - polars DataFrames are accepted wherever pandas ones are.
 - In a config file, the optional `[columns]` section sets `categorical`, `numeric`, `ordinal`, `datetime`, `text`,
   `drop`, `drop_ids`, `encoding` and `max_onehot` (see `fitfleet init`).
+
+## Data from PostgreSQL
+
+`postgres_set()` works like `set()`, but reads the features and the target with two SQL queries.
+Both must return the same rows in the same order (give them the same `ORDER BY`); the target query
+returns one column. Keyword arguments such as `categorical=` go to `set()`.
+
+```python
+with Classification() as run:
+    run.postgres_set(
+        "postgresql://user:password@localhost:5432/shop",  # or {"host": ..., "dbname": ..., "user": ..., "password": ...}
+        features_query="SELECT age, city, spend FROM customers ORDER BY id",
+        target_query="SELECT churned FROM customers ORDER BY id",
+        models=[RandomForestClassifier(), LogisticRegression()],
+    )
+    run.k_folds()
+```
 
 ## Command line
 
@@ -277,7 +295,7 @@ The saved model includes the run's scaling, polynomial features and feature subs
 Models saved before 0.2 (a bare estimator) still load.
 
 Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_selection()`,
-`brut_force_features()` -> `brute_force_features()`. The old names still work but warn. Imports moved from
+`brut_force_features()` -> `brute_force_features()`. The old names were removed. Imports moved from
 `external_classes` / `utils` / `results` into the `fitfleet` package.
 
 ## Usage notes
@@ -299,6 +317,22 @@ Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_sele
 pytest                              # unit tests (load tests are skipped)
 pytest --run-load -m load -s        # CPU load tests, a few minutes, prints a CPU timeline
 python -m benchmarks.bench          # timing / memory benchmark
+```
+
+The live PostgreSQL test runs only when `FITFLEET_TEST_POSTGRES_URL` is set. `docker-compose.yml` starts a
+throwaway database for it and can run the test in Docker:
+
+```
+docker compose run --rm --build tests   # database + tests/test_postgres.py, all in Docker
+docker compose down
+```
+
+or only the database, with the tests from your own environment (install `.[postgres]` first):
+
+```
+docker compose up -d --wait
+FITFLEET_TEST_POSTGRES_URL=postgresql://postgres:pw@localhost:55432/postgres pytest tests/test_postgres.py
+docker compose down
 ```
 
 

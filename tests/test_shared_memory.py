@@ -109,7 +109,8 @@ def test_add_two_shared_memories_with_the_same_name():
 # -------------------------
 import pickle
 
-import fitfleet.utils as uu
+import fitfleet.utils.decorators as ud
+import fitfleet.utils.shared_memory as uu
 
 
 @pytest.fixture
@@ -174,25 +175,25 @@ def test_owner_process_does_not_cache(monkeypatch):
 
 def test_force_gc_collects_every_n_tasks(monkeypatch):
     collections = []
-    monkeypatch.setattr(uu.gc, "collect", lambda generation=2: collections.append(generation))
-    monkeypatch.setattr(uu, "_tasks_since_gc", 0)
-    monkeypatch.setattr(uu, "GC_EVERY_N_TASKS", 3)
+    monkeypatch.setattr(ud.gc, "collect", lambda generation=2: collections.append(generation))
+    monkeypatch.setattr(ud, "_tasks_since_gc", 0)
+    monkeypatch.setattr(ud, "GC_EVERY_N_TASKS", 3)
 
-    task = uu.force_gc(lambda x: x * 2)
+    task = ud.force_gc(lambda x: x * 2)
     assert [task(i) for i in range(7)] == [0, 2, 4, 6, 8, 10, 12]
     assert collections == [2, 2]  # after the 3rd and 6th task
 
 
 def test_force_gc_counts_failed_tasks(monkeypatch):
-    monkeypatch.setattr(uu, "_tasks_since_gc", 0)
+    monkeypatch.setattr(ud, "_tasks_since_gc", 0)
 
-    @uu.force_gc
+    @ud.force_gc
     def boom():
         raise RuntimeError("task failed")
 
     with pytest.raises(RuntimeError, match="task failed"):
         boom()
-    assert uu._tasks_since_gc == 1
+    assert ud._tasks_since_gc == 1
 
 
 # -------------------------
