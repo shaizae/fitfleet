@@ -319,6 +319,15 @@ pytest --run-load -m load -s        # CPU load tests, a few minutes, prints a CP
 python -m benchmarks.bench          # timing / memory benchmark
 ```
 
+The live PostgreSQL test runs only when `FITFLEET_TEST_POSTGRES_URL` is set. `docker-compose.yml` starts a
+throwaway database for it (install `.[postgres]` first):
+
+```
+docker compose up -d --wait
+FITFLEET_TEST_POSTGRES_URL=postgresql://postgres:pw@localhost:55432/postgres pytest tests/test_postgres.py
+docker compose down
+```
+
 
 ## License
 

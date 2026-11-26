@@ -1,0 +1,23 @@
+# A throwaway PostgreSQL for the live test in tests/test_postgres.py.
+#
+#   docker compose up -d --wait
+#   $env:FITFLEET_TEST_POSTGRES_URL = "postgresql://postgres:pw@localhost:55432/postgres"   # bash: export ...
+#   pytest tests/test_postgres.py          # needs psycopg: pip install -e ".[dev,postgres]"
+#   docker compose down
+#
+# Port 55432 on the host, so it does not clash with a local PostgreSQL on 5432.
+# The data lives in memory (tmpfs) and is gone after `docker compose down`.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: pw
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
