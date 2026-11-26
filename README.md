@@ -112,9 +112,9 @@ Filters: `--status`, `--stage`, `--module`, `--level`, `--since` / `--until`, `-
 `--execution-id`; `--json` for scripts. In Python, a run has three log properties, each
 with the summary and the stage tree: `run.execution_log` (text), `run.save_pdf_log` and
 `run.save_json_log` (written into `log_dir`, set in the constructor:
-`Classification(log_dir="reports")`). `save_pdf_report()` adds the log to its PDF and writes the
-log PDF next to it.
-See [docs/execution_tracking.md](docs/execution_tracking.md).
+`Classification(log_dir="reports")`). `save_pdf_report()` adds the log to its PDF as the
+Execution Summary section; use `run.save_pdf_log` for a separate log file.
+See [docs/execution_tracking.md](https://github.com/shaizae/fitfleet/blob/master/docs/execution_tracking.md).
 
 ## Search smarter than every combination
 
@@ -198,7 +198,7 @@ best[0].save_pdf_report("out")            # per-model report (confusion, ROC, re
 ```
 
 The research behind the choice of plots, the architecture, and how to add a plot type are in
-[docs/visualization.md](docs/visualization.md).
+[docs/visualization.md](https://github.com/shaizae/fitfleet/blob/master/docs/visualization.md).
 
 ## Feature research
 
@@ -336,6 +336,10 @@ docker compose down
 ```
 
 
+## Changes
+
+What changed in each version, including breaking changes: [CHANGELOG.md](https://github.com/shaizae/fitfleet/blob/master/CHANGELOG.md).
+
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](https://github.com/shaizae/fitfleet/blob/master/LICENSE).

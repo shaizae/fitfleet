@@ -18,4 +18,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      # coverage was 95% when this minimum was set; the margin allows for code that runs only on some OSes
+      - run: pytest -q --cov=fitfleet --cov-report=term --cov-fail-under=90

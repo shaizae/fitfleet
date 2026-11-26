@@ -6,7 +6,7 @@ from fitfleet.regression import Regression
 from fitfleet.tracking import ExecutionLog, ExecutionTracker
 from fitfleet.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound, ValidationType
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["Classification", "Regression", "FeatureResearch", "FilteringCriteriaClassification", "FilteringCriteriaRegression",
            "ValidationType", "Sound", "SavedModel", "load", "ExecutionTracker", "ExecutionLog", "__version__"]
