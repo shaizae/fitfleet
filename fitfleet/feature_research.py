@@ -11,14 +11,15 @@ Stand-alone: give it a feature table and a target, it does not need a Classifica
     print(research.report())
     X = X.drop(columns=research.recommend().index)
     research.save_pdf_report("reports")         # everything above in one PDF, with charts
+    research.save_report("reports", ReportFormat.html)  # ... or as one HTML file (.dual: both)
 """
 from __future__ import annotations
 
 import datetime
+import io
 import logging
 import warnings
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,6 +41,7 @@ from fitfleet.features import Features
 from fitfleet.schema import to_pandas, to_seconds
 from fitfleet.target import Target
 from fitfleet.tracking import current_tracker, tracked
+from fitfleet.utils import ReportFormat
 
 CLASSIFICATION = "classification"
 REGRESSION = "regression"
@@ -562,7 +564,7 @@ class FeatureResearch:
         ax.tick_params(axis="y", length=0, labelsize=8, labelcolor=INK)
         ax.tick_params(axis="x", labelsize=7, colors=INK_MUTED)
 
-    # ------------------------------------------------------------- PDF report
+    # ------------------------------------------------------------- PDF / HTML report
     def overview_lines(self) -> list[str]:
         """Task, data size, preprocessing and target summary, one line each."""
         rows, columns = self.features.data.shape
@@ -598,10 +600,48 @@ class FeatureResearch:
         probe=True compares importances with random noise columns (adds the `noise` drop reason and the
         noise line on the chart); False uses plain permutation importance. Either way models are trained
         (`model`, default random forest) once per fold."""
+        return self._write_report(folder, ReportFormat.pdf, model, probe, correlation_threshold,
+                                  missing_threshold, leakage_threshold)[0]
+
+    @tracked("Feature research report", operation="write the feature research report")
+    def save_report(self, folder: str | Path, report_format: ReportFormat | str = ReportFormat.pdf,
+                    model: BaseEstimator | None = None, probe: bool = True, correlation_threshold: float = 0.9,
+                    missing_threshold: float = 0.5, leakage_threshold: float = 0.98) -> list[Path]:
+        """Write feature_research_<date>.<pdf|html> into `folder` and return the paths, PDF first.
+
+        report_format: ReportFormat.pdf (default), ReportFormat.html - the same report as one
+        self-contained HTML file with the charts embedded - or ReportFormat.dual for both files; the
+        scores and charts are computed once. See save_pdf_report for the contents and arguments."""
+        return self._write_report(folder, ReportFormat.parse(report_format), model, probe, correlation_threshold,
+                                  missing_threshold, leakage_threshold)
+
+    def _write_report(self, folder: str | Path, report_format: ReportFormat, model: BaseEstimator | None,
+                      probe: bool, correlation_threshold: float, missing_threshold: float,
+                      leakage_threshold: float) -> list[Path]:
+        from fitfleet.visualization.html import write_atomic
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         created = datetime.datetime.now()
-        path = folder / f"feature_research_{created:%Y-%m-%d_%H-%M-%S}.pdf"
+        stem = folder / f"feature_research_{created:%Y-%m-%d_%H-%M-%S}"
+        items = self._report_content(model, probe, correlation_threshold, missing_threshold, leakage_threshold,
+                                     created)
+        paths = []
+        for fmt in report_format.files:
+            path = stem.with_name(f"{stem.name}.{fmt}")
+            if fmt == "pdf":
+                SimpleDocTemplate(str(path), pagesize=landscape(A4),
+                                  title="Feature Research Report").build(_pdf_elements(items))
+            else:
+                write_atomic(path, _html_page(items, created))
+            paths.append(path)
+        return paths
+
+    def _report_content(self, model: BaseEstimator | None, probe: bool, correlation_threshold: float,
+                        missing_threshold: float, leakage_threshold: float,
+                        created: datetime.datetime) -> list[tuple[str, object]]:
+        """The report as (kind, payload) items, rendered by _pdf_elements() and _html_page():
+        title, p (paragraph), pre (code line), small (small code block), h2, h3, space (points),
+        page (page break) and chart ((png bytes, width pt, height pt, name))."""
         numeric = self._require_numeric()
 
         importance = self.random_probe(model) if probe else self.permutation_importance(model)
@@ -616,87 +656,145 @@ class FeatureResearch:
         recommended = self._recommend(missing_threshold, correlation_threshold, importance if probe else None)
         leaks = self.leakage_check(leakage_threshold)
 
-        styles = getSampleStyleSheet()
-        code = styles["Code"]
-        small = code.clone("SmallCode", fontSize=7, leading=8.5)
-        body, h2, h3 = styles["BodyText"], styles["Heading2"], styles["Heading3"]
-
-        def table(frame: pd.DataFrame | pd.Series, empty: str):
+        def table(frame: pd.DataFrame | pd.Series, empty: str) -> tuple[str, str]:
             if len(frame) == 0:
-                return Paragraph(empty, body)
-            return Preformatted(frame.to_string(float_format=lambda v: f"{v:.4f}"), small)
+                return ("p", empty)
+            return ("small", frame.to_string(float_format=lambda v: f"{v:.4f}"))
+
+        def chart(draw, name: str) -> tuple[str, object]:
+            """The chart drawn by draw() as PNG bytes; if drawing fails, a note instead (the report goes
+            on without it)."""
+            fig = None
+            try:
+                fig = draw()
+                width, height = (v * 72 for v in fig.get_size_inches())
+                buffer = io.BytesIO()
+                fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+                return ("chart", (buffer.getvalue(), width, height, name))
+            except Exception as e:
+                logging.getLogger("fitfleet.visualization").warning("chart %s failed: %s", name, e)
+                return ("p", f"Chart {name} could not be drawn ({type(e).__name__}: {e}).")
+            finally:
+                if fig is not None:
+                    plt.close(fig)
 
         quality = self.missing_report()
         quality = quality[quality["missing"] > 0]
         card = self.cardinality()
         several = numeric.shape[1] > 1
 
-        with TemporaryDirectory() as tmpdir:
-            def chart(draw, name: str):
-                """The chart drawn by draw() as an Image; if drawing fails, a note instead (the
-                report goes on without it)."""
-                fig = None
-                try:
-                    fig = draw()
-                    image_path = Path(tmpdir) / name
-                    width, height = (v * 72 for v in fig.get_size_inches())
-                    fig.savefig(image_path, dpi=150, bbox_inches="tight")
-                    scale = min(680 / width, 430 / height, 1.4)  # fit the landscape A4 frame (~686 x 439 pt)
-                    return Image(str(image_path), width=width * scale, height=height * scale)
-                except Exception as e:
-                    logging.getLogger("fitfleet.visualization").warning("chart %s failed: %s", name, e)
-                    return Paragraph(f"Chart {name} could not be drawn ({type(e).__name__}: {e}).", body)
-                finally:
-                    if fig is not None:
-                        plt.close(fig)
+        items = [("title", "Feature Research Report"), ("p", f"Created {created:%Y-%m-%d %H:%M}"), ("space", 8)]
+        items += [("pre", line) for line in self.overview_lines()]
+        items += [
+            ("space", 12), ("h2", "Recommended to drop"),
+            ("p", f"constant / id-like / more than {missing_threshold:.0%} missing / |correlation| "
+                  f">= {correlation_threshold} with a more informative feature"
+                  + (" / beats random noise columns on neither permutation importance nor mutual information"
+                     if probe else "")),
+            table(recommended, "Nothing to drop."),
+            ("space", 12), ("h2", "Possible leakage"),
+            ("p", f"Features that alone reach a cross-validated {self._default_scoring()} of "
+                  f"{leakage_threshold} or more. Check they are not the target in disguise."),
+            table(leaks, "None found."),
 
-            elements = [Paragraph("Feature Research Report", styles["Title"]),
-                        Paragraph(f"Created {created:%Y-%m-%d %H:%M}", body), Spacer(1, 8)]
-            elements += [Preformatted(line, code) for line in self.overview_lines()]
-            elements += [
-                Spacer(1, 12), Paragraph("Recommended to drop", h2),
-                Paragraph(f"constant / id-like / more than {missing_threshold:.0%} missing / |correlation| "
-                          f">= {correlation_threshold} with a more informative feature"
-                          + (" / beats random noise columns on neither permutation importance nor mutual information"
-                             if probe else ""), body),
-                table(recommended, "Nothing to drop."),
-                Spacer(1, 12), Paragraph("Possible leakage", h2),
-                Paragraph(f"Features that alone reach a cross-validated {self._default_scoring()} of "
-                          f"{leakage_threshold} or more. Check they are not the target in disguise.", body),
-                table(leaks, "None found."),
+            ("page", None), ("h2", "Feature ranking"),
+            ("p", "mean_rank = average rank of f_score, mutual_information and "
+                  "permutation_importance (1 = best)."),
+            table(ranking, "No numeric features."),
 
-                PageBreak(), Paragraph("Feature ranking", h2),
-                Paragraph("mean_rank = average rank of f_score, mutual_information and "
-                          "permutation_importance (1 = best).", body),
-                table(ranking, "No numeric features."),
+            ("page", None), chart(lambda: self.plot_importance(importance), "importance.png"),
 
-                PageBreak(), chart(lambda: self.plot_importance(importance), "importance.png"),
-
-                PageBreak(), Paragraph("Data quality", h2),
-                Paragraph("Missing values", h3), table(quality, "No missing values."),
-                Paragraph("Constant / quasi-constant (top value in 99% of rows or more)", h3),
-                table(self.constant_features(0.99), "None."),
-                Paragraph("Id-like columns (almost every row unique)", h3), table(card[card["id_like"]], "None."),
-                Paragraph("Distributions (|skew| > 1: consider a log / power transform)", h3),
-                table(self.distribution_summary(), "No numeric features."),
+            ("page", None), ("h2", "Data quality"),
+            ("h3", "Missing values"), table(quality, "No missing values."),
+            ("h3", "Constant / quasi-constant (top value in 99% of rows or more)"),
+            table(self.constant_features(0.99), "None."),
+            ("h3", "Id-like columns (almost every row unique)"), table(card[card["id_like"]], "None."),
+            ("h3", "Distributions (|skew| > 1: consider a log / power transform)"),
+            table(self.distribution_summary(), "No numeric features."),
+        ]
+        if several:
+            items += [
+                ("page", None), ("h2", "Correlation"),
+                ("h3", f"Pairs with |correlation| >= {correlation_threshold}"),
+                table(self.high_correlation_pairs(correlation_threshold), "None."),
+                ("h3", "Variance inflation factor (> 5-10 = strong multicollinearity)"),
+                table(self.vif().to_frame(), ""),
+                ("page", None), chart(self.plot_correlation, "correlation.png"),
             ]
-            if several:
-                elements += [
-                    PageBreak(), Paragraph("Correlation", h2),
-                    Paragraph(f"Pairs with |correlation| >= {correlation_threshold}", h3),
-                    table(self.high_correlation_pairs(correlation_threshold), "None."),
-                    Paragraph("Variance inflation factor (> 5-10 = strong multicollinearity)", h3),
-                    table(self.vif().to_frame(), ""),
-                    PageBreak(), chart(self.plot_correlation, "correlation.png"),
-                ]
-            tracker = current_tracker()
-            if tracker is not None:  # inside a tracked execution: its report so far, as the last page
-                elements += [PageBreak(), Paragraph("Execution summary", h2),
-                             Preformatted(tracker.log()._report(glyphs=False), small)]
-            SimpleDocTemplate(str(path), pagesize=landscape(A4), title="Feature Research Report").build(elements)
-        return path
+        tracker = current_tracker()
+        if tracker is not None:  # inside a tracked execution: its report so far, as the last page
+            items += [("page", None), ("h2", "Execution summary"), ("small", tracker.log()._report(glyphs=False))]
+        return items
 
     def __repr__(self) -> str:
         rows, columns = self.features.data.shape
         return (f"FeatureResearch(task={self.task!r}, rows={rows}, columns={columns}, "
                 f"numeric={len(self.numeric_features)}, cv={self.cv})")
+
+
+def _pdf_elements(items: list[tuple[str, object]]) -> list:
+    """FeatureResearch report items as reportlab flowables (landscape A4)."""
+    styles = getSampleStyleSheet()
+    code = styles["Code"]
+    small = code.clone("SmallCode", fontSize=7, leading=8.5)
+    body, h2, h3 = styles["BodyText"], styles["Heading2"], styles["Heading3"]
+    out = []
+    for kind, payload in items:
+        if kind == "title":
+            out.append(Paragraph(payload, styles["Title"]))
+        elif kind == "p":
+            out.append(Paragraph(payload, body))
+        elif kind == "pre":
+            out.append(Preformatted(payload, code))
+        elif kind == "small":
+            out.append(Preformatted(payload, small))
+        elif kind == "h2":
+            out.append(Paragraph(payload, h2))
+        elif kind == "h3":
+            out.append(Paragraph(payload, h3))
+        elif kind == "space":
+            out.append(Spacer(1, payload))
+        elif kind == "page":
+            out.append(PageBreak())
+        elif kind == "chart":
+            png, width, height, _ = payload
+            scale = min(680 / width, 430 / height, 1.4)  # fit the landscape A4 frame (~686 x 439 pt)
+            out.append(Image(io.BytesIO(png), width=width * scale, height=height * scale))
+        else:
+            raise ValueError(kind)
+    return out
+
+
+def _html_page(items: list[tuple[str, object]], created: datetime.datetime) -> str:
+    """FeatureResearch report items as one self-contained HTML page (the same content as the PDF)."""
+    from html import escape
+
+    from fitfleet.visualization.html import document, image_tag
+    title, body, contents = "Feature Research Report", [], []
+    for kind, payload in items:
+        if kind == "title":
+            title = str(payload)
+        elif kind == "p":
+            body.append(f"<p>{escape(str(payload))}</p>")
+        elif kind == "pre":
+            body.append(f'<pre class="line">{escape(str(payload))}</pre>')
+        elif kind == "small":
+            body.append(f"<pre>{escape(str(payload))}</pre>")
+        elif kind == "h2":
+            anchor = f"part-{len(contents) + 1}"
+            contents.append((anchor, str(payload)))
+            body.append(f'<h2 class="section" id="{anchor}">{escape(str(payload))}</h2>')
+        elif kind == "h3":
+            body.append(f"<h3>{escape(str(payload))}</h3>")
+        elif kind == "space":
+            body.append(f'<div style="height:{float(payload) * 96 / 72:.0f}px"></div>')
+        elif kind == "page":
+            body.append('<div class="page-break"></div>')
+        elif kind == "chart":
+            png, width, height, name = payload
+            scale = min(680 / width, 430 / height, 1.4)  # the size it has in the PDF, in CSS pixels
+            body.append(f"<figure>{image_tag(png, name, width * scale * 96 / 72)}</figure>")
+        else:
+            raise ValueError(kind)
+    return document(title, "\n".join(body), created=f"{created:%Y-%m-%d %H:%M}", landscape=True,
+                    contents=contents)

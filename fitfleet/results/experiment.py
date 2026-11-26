@@ -15,6 +15,7 @@ from sklearn.metrics import auc, roc_curve
 from sklearn.preprocessing import label_binarize
 
 from fitfleet.search import rank
+from fitfleet.utils import ReportFormat
 
 if TYPE_CHECKING:
     from fitfleet.features import Features
@@ -273,18 +274,29 @@ class ExperimentReport:
         removes the others; `top` = configurations listed in the leaderboard table.
         The run's execution log (which stages passed, failed or were skipped, where and why, and
         the stage tree) is the "Execution Summary" section."""
+        return self.save_report(folder, ReportFormat.pdf, top=top)[0]
+
+    def save_report(self, folder: str | Path, report_format: ReportFormat | str = ReportFormat.pdf,
+                    top: int = 20) -> list[Path]:
+        """Write experiment_report_<date>.<pdf|html> into `folder` and return the paths, PDF first.
+
+        report_format: ReportFormat.pdf (default), ReportFormat.html - the same report (every section,
+        table, plot and explanation) as one self-contained HTML file with the plots embedded - or
+        ReportFormat.dual for both files, from one rendering of the plots. See save_pdf_report for
+        the sections and `top`."""
+        report_format = ReportFormat.parse(report_format)
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
+        stem = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}"
         visualizations = self.visualize()
         pdf = self._pdf(visualizations, top)
         _add_execution(pdf, self._execution)
         ranks = {model: f"rank #{int(row['best_rank'])}" for model, row in self.summary.iterrows()}
         try:
-            path = pdf.build(path, visualizations, identifiers=ranks)
+            paths = pdf.write(stem, report_format, visualizations, identifiers=ranks)
         finally:  # statuses stay inspectable; the images are released
             self.last_visualizations = visualizations.without_images()
-        return path
+        return paths
 
     def _pdf(self, visualizations, top: int):
         """The text part of the PDF (the figures are added when it is built)."""
@@ -354,7 +366,8 @@ class ExperimentReport:
                   "actual vs predicted, residual diagnostics, Q-Q plot, error by target range")
         pdf.paragraph(section, f"This report is an overview of the experiment. The detailed analysis of each "
                                f"model ({detail}, feature importance) is in that model's own report: "
-                               f"result.save_pdf_report(folder) for the results filter_by() returns.")
+                               f"result.save_pdf_report(folder) or result.save_report(folder, ReportFormat.html) for the "
+                               f"results filter_by() returns.")
         return pdf
 
     def _findings(self) -> list[str]:

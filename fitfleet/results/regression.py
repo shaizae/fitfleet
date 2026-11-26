@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import datetime
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -152,10 +150,11 @@ class RegressionResults(BaseResults):
         Metrics, then every applicable plot (actual vs predicted, residual diagnostics, error by
         target range, feature importance when the model is fitted), each generated in isolation:
         a plot that fails or does not apply is listed in the appendix instead of stopping the report."""
-        if self._pred_test is None:
-            raise ValueError("No predictions available")
-        path = os.path.join(filename, f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.pdf")
-        return self._build_pdf_report(path, f"Regression Report - {self.name}")
+        return self.save_report(filename, "pdf")[0]
+
+    def _report_title(self) -> str:
+        """The title of this result's PDF / HTML report."""
+        return f"Regression Report - {self.name}"
 
     def __str__(self) -> str:
         """The report lines followed by the metrics table."""

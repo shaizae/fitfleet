@@ -23,7 +23,7 @@ from fitfleet.results.experiment import ExperimentReport, leaderboard as _leader
 from fitfleet.search import DIRECTIONS, STRATEGIES, rank as _rank
 from fitfleet.tracking import ConsoleOutput, ExecutionTracker, Status, current_stage, execution
 from fitfleet.tracking.core import NULL_STAGE
-from fitfleet.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
+from fitfleet.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, ReportFormat, Sound
 from fitfleet.visualization.background import ReportWorker
 
 if TYPE_CHECKING:
@@ -105,7 +105,8 @@ C = [0.1, 1, 10]
 [output]
 dir = "runs"                 # each run writes runs/<date_time>/
 keep = 1                     # how many of the top configurations to refit and save
-report = true                # PDF report for the experiment and each saved model
+report = true                # a report for the experiment and each saved model
+report_format = "pdf"        # pdf | html (one self-contained file, same content) | dual (both)
 sound = "none"               # played when the whole experiment ends:
                              # none | ping | double | chime | success | sparkle | alarm | bell
 '''
@@ -156,9 +157,10 @@ class Experiment:
     output_dir: Path = Path("runs")
     keep: int = 1
     report: bool = True
+    report_format: str = "pdf"  # ReportFormat: pdf | html | dual
     sound: Sound = Sound.none
     source: Path | None = None
-    report_timeout: float = 900.0  # seconds to wait for the PDF reports before returning
+    report_timeout: float = 900.0  # seconds to wait for the reports before returning
     last_execution: ExecutionTracker | None = field(default=None, repr=False, compare=False)
 
     @classmethod
@@ -230,6 +232,7 @@ class Experiment:
             output_dir=base / out.get("dir", "runs"),
             keep=out.get("keep", 1),
             report=out.get("report", True),
+            report_format=out.get("report_format", "pdf"),
             sound=_read_sound(out),
             source=source,
         )
@@ -247,6 +250,11 @@ class Experiment:
         criteria = TASKS[self.task][1]
         if self.select_by is not None and self.select_by not in criteria.__members__:
             raise ConfigError(f"select_by for {self.task} must be one of {list(criteria.__members__)}")
+        try:
+            ReportFormat.parse(self.report_format)
+        except ValueError:
+            raise ConfigError(f'[output] report_format must be "pdf", "html" or "dual", '
+                              f'not {self.report_format!r}') from None
         if not self.models:
             raise ConfigError("add at least one [[models]] entry")
         for key in ("categorical", "numeric", "datetime", "text", "drop"):
@@ -352,7 +360,7 @@ class Experiment:
         with execution(name, module=__name__, operation=f"run a {self.task} experiment", metadata=self._describe(),
                        console=ConsoleOutput(log, verbose=verbose)) as tracker:
             self.last_execution = tracker
-            tracker.plan(*PIPELINE_STAGES, module=__name__)
+            tracker.plan(*pipeline_stages(self._report_kind()), module=__name__)
             with tracker.track("Prepare output folder", module=__name__,
                                operation="create the run folder and copy the config into it") as step:
                 folder = new_run_folder(output_dir or self.output_dir)
@@ -374,6 +382,10 @@ class Experiment:
             finally:
                 BaseML._process_limit = previous_limit
 
+    def _report_kind(self) -> str:
+        """How the report stages are named: "PDF", "HTML" or "PDF + HTML"."""
+        return ReportFormat.parse(self.report_format).label
+
     def _describe(self) -> dict:
         """The experiment's settings for its execution record (no data, no paths beyond file names)."""
         return {"task": self.task, "config": None if self.source is None else self.source.name,
@@ -382,7 +394,7 @@ class Experiment:
                 "hyper_parameters": sorted(self.hyper_parameters), "preprocessing": [
                     step if isinstance(step, str) else next(iter(step), "?") for step in self.preprocessing],
                 "feature_selection": self.selection_method, "search": self.search_strategy, "keep": self.keep,
-                "report": self.report}
+                "report": self.report, "report_format": self.report_format}
 
     def _train(self, task_cls: type[BaseML],
                metric: FilteringCriteriaClassification | FilteringCriteriaRegression,
@@ -441,18 +453,20 @@ class Experiment:
             search_log = run.search_log
 
         # Reports are rendered on a background thread while the models are saved, and every
-        # report job is isolated: a plotting or PDF failure is logged, never raised, so it
-        # cannot cost the run its leaderboard or its saved models.
+        # report job is isolated: a plotting, PDF or HTML failure is logged, never raised, so it
+        # cannot cost the run its leaderboard or its saved models. Each report draws its plots
+        # once and writes every format of [output] report_format from them.
+        report_format, kind = ReportFormat.parse(self.report_format), self._report_kind()
         parent = current_stage()[1] if tracker is not None else None
         reports = ReportWorker(log) if self.report else None
         if reports is not None:
-            report._execution = tracker.log() if tracker is not None else None  # stages up to now, for the PDF
-            reports.submit(_tracked_report(tracker, parent, "Experiment PDF report", report.save_pdf_report,
+            report._execution = tracker.log() if tracker is not None else None  # stages up to now, for the report
+            reports.submit(_tracked_report(tracker, parent, f"Experiment {kind} report", report.save_report,
                                            plots=lambda: report.last_visualizations),
-                           folder, what="experiment PDF report")
+                           folder, report_format, what=f"experiment {kind} report")
         elif tracker is not None:
-            tracker.skip("Experiment PDF report", "PDF reports are turned off ([output] report = false).")
-            tracker.skip("Finish PDF reports", "PDF reports are turned off ([output] report = false).")
+            tracker.skip(f"Experiment {kind} report", f"{kind} reports are turned off ([output] report = false).")
+            tracker.skip(f"Finish {kind} reports", f"{kind} reports are turned off ([output] report = false).")
         for step in search_log:
             log("  " + ", ".join(f"{k} {v}" for k, v in step.items()))
         log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}, {folder / 'summary.csv'}")
@@ -464,16 +478,17 @@ class Experiment:
                 place.mkdir()
                 model_path = result.to_model().save(place / "model.joblib")
                 if reports is not None:
-                    reports.submit(_tracked_report(tracker, parent, f"PDF report: #{i} {result.name}",
-                                                   result.save_pdf_report),
-                                   str(place), what=f"PDF report of #{i} {result.name}")
+                    reports.submit(_tracked_report(tracker, parent, f"{kind} report: #{i} {result.name}",
+                                                   result.save_report),
+                                   str(place), report_format, what=f"{kind} report of #{i} {result.name}")
                 log(f"#{i}: {result.name} {metric.value}={getattr(result, metric.value):.4f} -> {model_path}")
         if reports is not None:
-            with track("Finish PDF reports", module=__name__,
-                       operation="wait for the background PDF reports") as step:
-                for path, error in reports.wait(self.report_timeout):
-                    if error is None and path is not None:
-                        log(f"report -> {path}")
+            with track(f"Finish {kind} reports", module=__name__,
+                       operation=f"wait for the background {kind} reports") as step:
+                for paths, error in reports.wait(self.report_timeout):
+                    if error is None and paths is not None:
+                        for path in paths if isinstance(paths, list) else [paths]:
+                            log(f"report -> {path}")
                 viz = report.last_visualizations
                 if viz is not None and (viz.failed or viz.skipped):
                     log(f"experiment report plots: {viz.summary()} (see the report's last section)")
@@ -481,10 +496,15 @@ class Experiment:
         return folder
 
 
-# The experiment's top-level stages, announced up front so the summary can say which ones never ran.
-PIPELINE_STAGES = ("Prepare output folder", "Load data", "Configure run", "Train and validate",
-                   "Rank results and write CSV", "Refit best models", "Experiment PDF report", "Save models",
-                   "Finish PDF reports")
+def pipeline_stages(kind: str = "PDF") -> tuple[str, ...]:
+    """The experiment's top-level stages, announced up front so the summary can say which ones never ran.
+    `kind` names the report stages: "PDF", "HTML" or "PDF + HTML"."""
+    return ("Prepare output folder", "Load data", "Configure run", "Train and validate",
+            "Rank results and write CSV", "Refit best models", f"Experiment {kind} report", "Save models",
+            f"Finish {kind} reports")
+
+
+PIPELINE_STAGES = pipeline_stages("PDF")  # the default ([output] report_format = "pdf")
 
 
 def _tracked_report(tracker: ExecutionTracker | None, parent: str | None, name: str, func: Callable,
@@ -498,7 +518,7 @@ def _tracked_report(tracker: ExecutionTracker | None, parent: str | None, name: 
 
     def job(*args, **kwargs):
         with tracker.track(name, parent=parent, module="fitfleet.visualization",
-                           operation="render a PDF report on the background report thread") as step:
+                           operation="render a report on the background report thread") as step:
             value = func(*args, **kwargs)
             viz = plots() if plots is not None else None
             if viz is not None:

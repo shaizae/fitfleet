@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Self
 import numpy as np
 
 from fitfleet.model import SavedModel
-from fitfleet.utils import ValidationType, create_path, in_enum, is_fitted
+from fitfleet.utils import ReportFormat, ValidationType, create_path, in_enum, is_fitted
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -233,19 +233,21 @@ class BaseResults(ABC):
         """Save to a new file in the folder `path`; load it with fitfleet.load(file)."""
         return self.to_model().save(path)
 
-    def save_results(self, path: str) -> None:
-        """Save the model and the PDF report into a new timestamped subfolder of `path`.
+    def save_results(self, path: str, report_format: ReportFormat | str = ReportFormat.pdf) -> None:
+        """Save the model and the report into a new timestamped subfolder of `path`.
 
+        report_format: ReportFormat.pdf (default), .html or .dual (both files); see save_report.
         The model is saved first; a failure while writing the report is logged and does
         not affect the saved model."""
         from fitfleet.visualization.core import safe_call
+        report_format = ReportFormat.parse(report_format)
         name = f"{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"
         folder = os.path.join(path, name)
 
         create_path(folder)
 
         self.save_model(folder)
-        safe_call(self.save_pdf_report, folder, what=f"PDF report of {self.name}")
+        safe_call(self.save_report, folder, report_format, what=f"{report_format.label} report of {self.name}")
 
     def visualize(self):
         """Every plot that applies to this result, each generated in isolation.
@@ -263,8 +265,26 @@ class BaseResults(ABC):
         state.pop("_execution", None)
         return state
 
-    def _build_pdf_report(self, filename: str, title: str) -> Path:
-        """The per-model PDF: metrics, then every applicable plot, then the visualization appendix."""
+    def save_report(self, folder: str, report_format: ReportFormat | str = ReportFormat.pdf) -> list[Path]:
+        """Write a timestamped report of this result into the folder `folder`; returns the paths, PDF first.
+
+        report_format: ReportFormat.pdf (default), ReportFormat.html - the same report (metrics, every
+        plot with its explanation, the appendix and the run's execution log) as one self-contained
+        HTML file with the plots embedded - or ReportFormat.dual for both files, from one rendering
+        of the plots."""
+        report_format = ReportFormat.parse(report_format)
+        if self._pred_test is None:
+            raise ValueError("No predictions available")
+        stem = os.path.join(folder, f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}")
+        return self._build_report(stem, self._report_title(), report_format)
+
+    def _report_title(self) -> str:
+        """Hook: the title of this result's report."""
+        return f"Report - {self.name}"
+
+    def _build_report(self, stem: str | Path, title: str, report_format: ReportFormat) -> list[Path]:
+        """The per-model report: metrics, then every applicable plot, then the visualization appendix,
+        written to `stem`.pdf and / or `stem`.html."""
         import pandas as pd
         from fitfleet.visualization.pdf import PdfReport
         visualizations = self.visualize()
@@ -294,7 +314,7 @@ class BaseResults(ABC):
             pdf.table(section, pd.concat([folds.astype({"rows": object}), stats]).rename_axis("fold"))
         from fitfleet.results.experiment import _add_execution
         _add_execution(pdf, self._execution)  # the run's log, as the "Execution Summary" section
-        return pdf.build(filename, visualizations)
+        return pdf.write(stem, report_format, visualizations)
 
     def _report_details(self, pdf) -> None:
         """Hook: add task-specific text to the per-model PDF."""

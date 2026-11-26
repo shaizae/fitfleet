@@ -46,3 +46,30 @@ class FilteringCriteriaRegression(StrEnum):
     def maximize(self) -> bool:
         """Whether a higher value is better (only r2; the error metrics are minimized)."""
         return self == FilteringCriteriaRegression.r2
+
+
+class ReportFormat(StrEnum):
+    """File format of a saved report (save_report): a PDF, one self-contained HTML file with the
+    same content, or dual = both, built from one rendering of the plots."""
+    pdf = "pdf"
+    html = "html"
+    dual = "dual"
+
+    @property
+    def files(self) -> tuple[str, ...]:
+        """The file extensions this format writes, PDF first: ("pdf",), ("html",) or ("pdf", "html")."""
+        return ("pdf", "html") if self is ReportFormat.dual else (self.value,)
+
+    @property
+    def label(self) -> str:
+        """"PDF", "HTML" or "PDF + HTML", for log and stage names."""
+        return " + ".join(f.upper() for f in self.files)
+
+    @classmethod
+    def parse(cls, value: ReportFormat | str) -> ReportFormat:
+        """A member, or its name in any case ("pdf", "HTML", "dual"); ValueError for anything else."""
+        try:
+            return cls(value.lower() if isinstance(value, str) else value)
+        except ValueError:
+            raise ValueError(f'report format must be ReportFormat.pdf, .html or .dual '
+                             f'("pdf", "html" or "dual"), not {value!r}') from None

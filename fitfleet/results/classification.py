@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import datetime
-import os.path
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -189,11 +187,11 @@ class ClassificationResults(BaseResults):
         per-class scores, ROC / precision-recall / calibration when probabilities exist, feature
         importance when the model is fitted), each generated in isolation: a plot that fails or
         does not apply is listed in the report's appendix instead of stopping the report."""
-        if self._pred_test is None:
-            raise ValueError("No predictions available")
-        path = os.path.join(filename,
-                            f"report_{self.name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pdf")
-        return self._build_pdf_report(path, f"Classification Report - {self.name}")
+        return self.save_report(filename, "pdf")[0]
+
+    def _report_title(self) -> str:
+        """The title of this result's PDF / HTML report."""
+        return f"Classification Report - {self.name}"
 
     def _report_details(self, pdf) -> None:
         """sklearn's per-class text report."""

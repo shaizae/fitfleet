@@ -7,6 +7,11 @@ version is 0.x, a minor release may contain breaking changes, and they are liste
 ## 0.3.0 - unreleased
 
 ### Added
+- HTML reports with the same content as the PDFs, as one self-contained file (plots embedded):
+  `save_html_report()` on the experiment report, on every result and on `FeatureResearch`, plus
+  `run.save_html_log`. `save_report(folder, "pdf" | "html" | "both")` writes several formats from one
+  rendering of the plots, and `save_results(folder, formats=...)` passes the choice on. In a config file,
+  `[output] report_format = "pdf" | "html" | "both"` (default `"pdf"`).
 - `postgres_set()`: read the features and the target with two SQL queries from PostgreSQL
   (`pip install "fitfleet[postgres]"`). A `docker-compose.yml` starts a throwaway database for the live test.
 - Additional metrics in every report and in `print(result)`, computed from the out-of-sample predictions

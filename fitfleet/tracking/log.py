@@ -1,9 +1,9 @@
 """Read execution records - live (tracker.log()) or from disk (ExecutionLog.load()).
 
-Users output the log only through a run's three properties (run.execution_log, run.save_pdf_log,
-run.save_json_log - see fitfleet.base.BaseML) and the `fitfleet log` command. The text and PDF
-builders here (_report, _summary_text, _tree, _details, _add_to_pdf, _save_pdf_log,
-_save_json_log) are internal to the package.
+Users output the log only through a run's properties (run.execution_log, run.save_pdf_log,
+run.save_html_log, run.save_json_log - see fitfleet.base.BaseML) and the `fitfleet log` command. The
+text, PDF and HTML builders here (_report, _summary_text, _tree, _details, _add_to_pdf, _save_pdf_log,
+_save_html_log, _save_json_log) are internal to the package.
 """
 from __future__ import annotations
 
@@ -495,7 +495,7 @@ class ExecutionLog:
 
     # ------------------------------------------------------------ export
     def _export_path(self, target: str | Path, suffix: str) -> Path:
-        """`target` itself if it names a .pdf / .json file, else execution-log_<id>_<time><suffix> in it.
+        """`target` itself if it names a .pdf / .html / .json file, else execution-log_<id>_<time><suffix> in it.
         (Not execution_*: load() of a run folder must not read this copy as a second execution.)"""
         target = Path(target)
         if target.suffix.lower() == suffix:
@@ -516,6 +516,15 @@ class ExecutionLog:
         pdf = PdfReport("Execution Log", "" if root is None else f"{root.stage_name} - {self.outcome.split(' (')[0]}")
         self._add_to_pdf(pdf, max_rows=max_rows, details=details)
         return pdf.build(self._export_path(folder, ".pdf"))
+
+    def _save_html_log(self, folder: str | Path, details: bool = True, max_rows: int = 1000) -> Path:
+        """The same execution log as _save_pdf_log(), as one HTML file; its path.
+        `folder`: a folder (file named execution-log_<id>_<time>.html) or a .html path."""
+        from fitfleet.visualization.pdf import PdfReport
+        root = self.root
+        pdf = PdfReport("Execution Log", "" if root is None else f"{root.stage_name} - {self.outcome.split(' (')[0]}")
+        self._add_to_pdf(pdf, max_rows=max_rows, details=details)
+        return pdf.build_html(self._export_path(folder, ".html"))
 
     def _save_json_log(self, folder: str | Path) -> Path:
         """Write the execution log as JSON and return its path: {"summary": ..., "tree": [the stage tree,
