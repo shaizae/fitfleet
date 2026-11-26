@@ -6,10 +6,10 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from functools import partial, wraps
-from itertools import combinations, count
+from itertools import count
 from multiprocessing.pool import Pool
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 from pandas import DataFrame, Series
@@ -27,7 +27,10 @@ from fitfleet.tracking import TrackedTask, current_stage, execution, stage, trac
 from fitfleet.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from fitfleet.train_data import TrainData, KFoldsTrainData, build_estimator
 from fitfleet.utils import Sound, ValidationType, in_enum, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
-    SharedMemory
+    SharedMemory, deprecated
+from fitfleet.utils.feature_selection import brute_force, fill_missing, select_k_best_columns
+from fitfleet.utils.postgres import read_postgres
+from fitfleet.utils.sound import play_wav
 
 
 # Start workers as fresh interpreters on every OS. Linux defaults to fork(), which can deadlock
@@ -155,6 +158,28 @@ class BaseML(ABC):
         self._feature_search = None
         self._train_data = [TrainData(model, self.results_type) for model in models]
 
+    def postgres_set(self, connection: str | dict, features_query: str, target_query: str,
+                     models: list[BaseEstimator], *, params: Any = None, **set_kwargs):
+        """Like set(), but the features and the target are read from PostgreSQL (needs psycopg:
+        pip install fitfleet[postgres]).
+
+        connection: a URL ('postgresql://user:password@host:5432/dbname') or a dict of psycopg
+        connect arguments ({"host", "port", "dbname", "user", "password", ...}).
+        features_query: a SELECT returning one column per feature.
+        target_query: a SELECT returning exactly one column: the target, for the same rows in the
+        same order as features_query (give both the same ORDER BY).
+        params: optional query parameters, passed with both queries (e.g. %(name)s placeholders).
+        Other keyword arguments (categorical, numeric, ordinal, datetime, text, drop_ids) go to set()."""
+        features, target = read_postgres(connection, features_query, target_query, params)
+        if features.shape[1] == 0 or len(features) == 0:
+            raise ValueError("features_query returned no data")
+        if target.shape[1] != 1:
+            raise ValueError(f"target_query must return exactly one column, not {list(target.columns)}")
+        if len(target) != len(features):
+            raise ValueError(f"features_query returned {len(features)} rows but target_query {len(target)}: "
+                             f"both must return the same rows in the same order (use the same ORDER BY)")
+        self.set(features, target.iloc[:, 0], models, **set_kwargs)
+
     @staticmethod
     def process_limit(new_limit: int):
         if new_limit < 1:
@@ -240,7 +265,7 @@ class BaseML(ABC):
             sound = Sound(sound)
             if sound is Sound.none:
                 return
-            if sound is not Sound.bell and _play_wav(sound.wav_bytes()):
+            if sound is not Sound.bell and play_wav(sound.wav_bytes()):
                 return
             sys.stdout.write("\a")
             sys.stdout.flush()
@@ -516,7 +541,7 @@ class BaseML(ABC):
         features = self.features.pop_index(held_out)
         target = self.targets.pop_index(held_out)
         if mixed:
-            features = _fill_missing(raw)
+            features = fill_missing(raw)
         # One scoring pass serves every k; no process pool needed.
         if mixed:
             self._features_index = select_k_best_columns(algorithm, features, target, number_of_features,
@@ -555,7 +580,7 @@ class BaseML(ABC):
         if total > self.max_feature_combinations:
             raise ValueError(f"{n} features give {total:,} subsets (limit {self.max_feature_combinations:,}). "
                              f"Use feature_selection(), or raise {type(self).__name__}.max_feature_combinations.")
-        self._features_index = [[int(i) for i in combo] for combo in _brute_force(np.arange(n))]
+        self._features_index = [[int(i) for i in combo] for combo in brute_force(np.arange(n))]
         self._all_features = False
         self._feature_search = None
 
@@ -662,77 +687,17 @@ class BaseML(ABC):
     # ------------------------------------------------------------------ old names (deprecated)
     @property
     def fetchers(self):
-        _deprecated("fetchers", "features")
+        deprecated("fetchers", "features")
         return self.features
 
     def fetcher_selection(self, algorithm, number_of_features: list[int]):
-        _deprecated("fetcher_selection()", "feature_selection()")
+        deprecated("fetcher_selection()", "feature_selection()")
         return self.feature_selection(algorithm, number_of_features)
 
     def brut_force_features(self):
-        _deprecated("brut_force_features()", "brute_force_features()")
+        deprecated("brut_force_features()", "brute_force_features()")
         return self.brute_force_features()
 
 
 def _play_end_sound(sound: Sound):
     BaseML.play_sound(sound)  # looked up when it runs, so it can be replaced (e.g. in tests)
-
-
-def _play_wav(data: bytes) -> bool:
-    """Play WAV bytes to the end; True if a player was found and worked."""
-    try:
-        import winsound
-        winsound.PlaySound(data, winsound.SND_MEMORY)  # waits until done, so exit doesn't cut it off
-        return True
-    except ImportError:
-        pass
-    import shutil
-    import subprocess
-    import tempfile
-    for player in ("afplay", "paplay", "aplay"):
-        if shutil.which(player):
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                f.write(data)
-            try:
-                return subprocess.run([player, f.name], capture_output=True, timeout=10).returncode == 0
-            finally:
-                os.unlink(f.name)
-    return False
-
-
-def _deprecated(old: str, new: str):
-    warnings.warn(f"{old} is deprecated, use {new}", DeprecationWarning, stacklevel=3)
-
-
-def select_k_best_columns(algorithm, features: np.ndarray, target: np.ndarray, ks, schema: ColumnSchema) -> list:
-    """Top-k *original* columns for every k in `ks`. A column's score is the best score of its matrix
-    columns (a text column takes several). Ties keep the column order."""
-    scores = algorithm(features, target)
-    scores = np.asarray(scores[0] if isinstance(scores, tuple) else scores, dtype=float)
-    scores = np.nan_to_num(scores, nan=-np.inf)
-    per_column = np.array([scores[schema.matrix_index([i])].max() for i in range(len(schema.columns))])
-    order = np.argsort(-per_column, kind="stable")
-    out, seen = [], set()
-    for k in ks:
-        key = tuple(sorted(int(i) for i in order[:min(k, len(order))]))
-        if key not in seen:
-            seen.add(key)
-            out.append(np.asarray(key))
-    return out
-
-
-def _fill_missing(X: np.ndarray) -> np.ndarray:
-    """NaN replaced by the column median (0 for an all-missing column); for scoring only."""
-    if not np.isnan(X).any():
-        return X
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        medians = np.nan_to_num(np.nanmedian(X, axis=0))
-    return np.where(np.isnan(X), medians, X)
-
-
-def _brute_force(vec: np.ndarray) -> Iterable[tuple]:
-    for i in range(1, len(vec) + 1):
-        for combo in combinations(vec, i):
-            yield combo
-

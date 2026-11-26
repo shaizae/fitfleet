@@ -9,6 +9,7 @@ every model x feature subset x hyper-parameter combination, scored on the same s
 pip install fitfleet         # from PyPI
 pip install -e .            # the library, from a clone
 pip install -e ".[dev]"     # + test tools
+pip install "fitfleet[postgres]"  # + postgres_set() (psycopg)
 ```
 
 ```python
@@ -57,6 +58,23 @@ with Classification() as run:
 - polars DataFrames are accepted wherever pandas ones are.
 - In a config file, the optional `[columns]` section sets `categorical`, `numeric`, `ordinal`, `datetime`, `text`,
   `drop`, `drop_ids`, `encoding` and `max_onehot` (see `fitfleet init`).
+
+## Data from PostgreSQL
+
+`postgres_set()` works like `set()`, but reads the features and the target with two SQL queries.
+Both must return the same rows in the same order (give them the same `ORDER BY`); the target query
+returns one column. Keyword arguments such as `categorical=` go to `set()`.
+
+```python
+with Classification() as run:
+    run.postgres_set(
+        "postgresql://user:password@localhost:5432/shop",  # or {"host": ..., "dbname": ..., "user": ..., "password": ...}
+        features_query="SELECT age, city, spend FROM customers ORDER BY id",
+        target_query="SELECT churned FROM customers ORDER BY id",
+        models=[RandomForestClassifier(), LogisticRegression()],
+    )
+    run.k_folds()
+```
 
 ## Command line
 

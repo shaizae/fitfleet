@@ -43,6 +43,7 @@ fitfleet = "fitfleet.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5", "psutil>=6"]
+postgres = ["psycopg[binary]>=3.1"]
 
 [tool.setuptools.dynamic]
 version = { attr = "fitfleet.__version__" }
