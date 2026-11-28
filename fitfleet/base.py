@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from pandas import DataFrame, Series
 from sklearn.base import BaseEstimator
-from sklearn.model_selection import train_test_split as sk_train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split as sk_train_test_split
 from tqdm import tqdm
 
 from fitfleet.encoding import ENCODING_PARAM, ENCODINGS, MAX_ONEHOT
@@ -100,6 +101,8 @@ class BaseML(ABC):
         self.targets = None
         self._train_data = None
         self._train_index = None  # rows used for training by the last train_test_split
+        self._groups = None  # group code (0..n_groups-1) of every row, or None (no groups given to set())
+        self._group_labels = None  # the group of every row as set() got it, or None
         self._results = None
         self._run_id = None
         self._pool = None
@@ -116,7 +119,7 @@ class BaseML(ABC):
     def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator], *,
             categorical: list[str] | None = None, numeric: list[str] | None = None,
             ordinal: dict[str, list] | None = None, datetime: list[str] | None = None,
-            text: list[str] | None = None, drop_ids: bool = True):
+            text: list[str] | None = None, drop_ids: bool = True, groups: np.ndarray | Series | None = None):
         """The data and the models to try.
 
         `features` may mix numeric, boolean, categorical (text / pandas category), ordinal and
@@ -126,10 +129,25 @@ class BaseML(ABC):
         `datetime` (text to parse as dates) and `text` (free text, embedded as numbers).
 
         drop_ids: leave out text columns where (almost) every row has its own value (ids, keys),
-        with a warning - as categories they can't generalize. Declared columns are always kept."""
+        with a warning - as categories they can't generalize. Declared columns are always kept.
+
+        groups: optional. Rows that belong together (e.g. the same patient, user or store): a
+        NumPy array or a pandas / polars Series with one value per row. When given,
+        a group is never split between training and testing: k_folds uses StratifiedGroupKFold
+        (classification) / GroupKFold (regression), train_test_split, halving rounds and
+        feature_selection pick whole groups, and leave_one_group_out() is available.
+        None (the default) = every row stands alone, as before."""
         features, target = to_pandas(features), to_pandas(target)
         if isinstance(target, Series):
             target = target.to_numpy(copy=True)
+        group_values = None
+        if groups is not None:
+            groups = to_pandas(groups)
+            if not isinstance(groups, (np.ndarray, Series)):
+                raise TypeError(f"groups must be a numpy array or a Series, not {type(groups).__name__}")
+            group_values = np.asarray(groups)
+        self._groups = self._group_codes(group_values, len(target))
+        self._group_labels = None if self._groups is None else np.asarray(group_values).copy()
 
         schema = None
         if isinstance(features, DataFrame):
@@ -158,6 +176,32 @@ class BaseML(ABC):
         self._feature_search = None
         self._train_data = [TrainData(model, self.results_type) for model in models]
 
+    @staticmethod
+    def _group_codes(values, n_rows: int) -> np.ndarray | None:
+        """Group labels as codes 0..n_groups-1 (None stays None)."""
+        if values is None:
+            return None
+        values = np.asarray(values)
+        if values.ndim != 1 or len(values) != n_rows:
+            raise ValueError(f"groups must have one value per row ({n_rows}), not shape {values.shape}")
+        codes, uniques = pd.factorize(values)
+        if (codes < 0).any():
+            raise ValueError("groups has missing values: every row needs a group")
+        if len(uniques) < 2:
+            raise ValueError("groups needs at least 2 different groups")
+        return codes.astype(np.int64)
+
+    @property
+    def groups(self) -> np.ndarray | None:
+        """The group of every row, as set() got it (labels, not codes), or None when set() got
+        no groups. Rows that feature_selection held out are no longer included. A copy."""
+        return None if self._group_labels is None else self._group_labels.copy()
+
+    @property
+    def n_groups(self) -> int | None:
+        """How many groups set() got, or None when it got no groups."""
+        return None if self._groups is None else int(self._groups.max()) + 1
+
     def postgres_set(self, connection: str | dict, features_query: str, target_query: str,
                      models: list[BaseEstimator], *, params: Any = None, **set_kwargs):
         """Like set(), but the features and the target are read from PostgreSQL (needs psycopg:
@@ -169,7 +213,8 @@ class BaseML(ABC):
         target_query: a SELECT returning exactly one column: the target, for the same rows in the
         same order as features_query (give both the same ORDER BY).
         params: optional query parameters, passed with both queries (e.g. %(name)s placeholders).
-        Other keyword arguments (categorical, numeric, ordinal, datetime, text, drop_ids) go to set()."""
+        Other keyword arguments (categorical, numeric, ordinal, datetime, text, drop_ids, groups) go to
+        set()."""
         features, target = read_postgres(connection, features_query, target_query, params)
         if features.shape[1] == 0 or len(features) == 0:
             raise ValueError("features_query returned no data")
@@ -368,10 +413,17 @@ class BaseML(ABC):
         n_classes = len(np.unique(y)) if self._stratify_labels(y) is not None else 1
         return max(2 * n_splits * n_classes, 20)
 
-    def _subsample(self, rows: np.ndarray, n: int, rng: np.random.Generator) -> np.ndarray:
-        """n of `rows`, stratified for classification."""
+    def _subsample(self, rows: np.ndarray, n: int, rng: np.random.Generator, min_groups: int = 2) -> np.ndarray:
+        """n of `rows`, stratified for classification. With groups: whole groups, in random
+        order, until at least n rows (and at least min_groups groups) are picked."""
         if n >= len(rows):
             return rows
+        if self._groups is not None:
+            groups = self._groups[rows]
+            order = rng.permutation(np.unique(groups))
+            sizes = np.bincount(groups, minlength=self.n_groups)[order]
+            k = max(int(np.searchsorted(np.cumsum(sizes), n)) + 1, min_groups)
+            return np.sort(rows[np.isin(groups, order[:k])])
         stratify = self._stratify_labels(self.targets.data[rows])
         seed = int(rng.integers(2 ** 31 - 1))
         try:
@@ -411,7 +463,7 @@ class BaseML(ABC):
         if settings.strategy != "halving":
             return evaluate(candidates, None, "training")
         min_rows = min(settings.min_rows or self._default_min_rows(n_splits), len(rows))
-        return successive_halving(evaluate, candidates, lambda n: self._subsample(rows, n, rng), len(rows),
+        return successive_halving(evaluate, candidates, lambda n: self._subsample(rows, n, rng, n_splits), len(rows),
                                   min_rows, settings.factor, criteria, n_columns, self.search_log)
 
     def _evaluate_batch(self, func, tasks: list, desc: str) -> list:
@@ -427,7 +479,8 @@ class BaseML(ABC):
         return None
 
     @abstractmethod
-    def _make_splitter(self, n_splits: int, shuffle: bool, seed, y: np.ndarray = None):
+    def _make_splitter(self, n_splits: int, shuffle: bool, seed, y: np.ndarray = None, groups: np.ndarray = None):
+        """The scikit-learn splitter for k_folds; a group splitter when `groups` is not None."""
         ...
 
     @staticmethod
@@ -437,8 +490,11 @@ class BaseML(ABC):
             return None
         return random_state if random_state is not None else int(np.random.randint(2 ** 31 - 1))
 
-    def _split_rows(self, ratio: float, y: np.ndarray):
+    def _split_rows(self, ratio: float, y: np.ndarray, groups: np.ndarray = None):
         rows = np.arange(len(y))
+        if groups is not None:  # ratio = fraction of the groups that go to training
+            splitter = GroupShuffleSplit(n_splits=1, train_size=ratio, random_state=self.random_state)
+            return next(splitter.split(rows, y, groups))
         stratify = self._stratify_labels(y)
         try:
             return sk_train_test_split(rows, train_size=ratio, random_state=self.random_state, stratify=stratify)
@@ -448,13 +504,17 @@ class BaseML(ABC):
             # a class too small to appear on both sides: fall back to a plain split
             return sk_train_test_split(rows, train_size=ratio, random_state=self.random_state)
 
-    def _fold_ids(self, n_splits: int, shuffle: bool, seed, y: np.ndarray) -> np.ndarray:
+    def _fold_ids(self, n_splits: int, shuffle: bool, seed, y: np.ndarray, groups: np.ndarray = None) -> np.ndarray:
         n = len(y)
-        if n_splits == n:  # leave-one-out: every row is its own fold
+        if groups is not None:
+            groups = np.unique(groups, return_inverse=True)[1]  # codes 0..k-1 of the groups present
+            if n_splits == groups.max() + 1:  # leave-one-group-out: every group is its own fold
+                return groups.astype(np.int64)
+        elif n_splits == n:  # leave-one-out: every row is its own fold
             return np.arange(n)
         ids = np.empty(n, dtype=np.int64)
-        splitter = self._make_splitter(n_splits, shuffle, seed, y)
-        for fold, (_, test) in enumerate(splitter.split(np.zeros(n), y)):
+        splitter = self._make_splitter(n_splits, shuffle, seed, y, groups)
+        for fold, (_, test) in enumerate(splitter.split(np.zeros(n), y, groups)):
             ids[test] = fold
         return ids
 
@@ -468,7 +528,7 @@ class BaseML(ABC):
         self._start_run()
         X, y = self._share_data()
         with stage("Split rows", operation=f"split rows {ratio:.0%} train / {1 - ratio:.0%} test"):
-            train_index, test_index = self._split_rows(ratio, y.array)
+            train_index, test_index = self._split_rows(ratio, y.array, self._groups)
         self._train_index = train_index
         preprocessing = self.features.preprocessing
 
@@ -493,6 +553,9 @@ class BaseML(ABC):
             raise ValueError("n_splits must be greater than 1")
         if n_splits > len(self.targets.data):
             raise ValueError("n_splits must be less than dataset size")
+        groups = self._groups
+        if groups is not None and n_splits > self.n_groups:
+            raise ValueError(f"n_splits ({n_splits}) can't be more than the number of groups ({self.n_groups})")
         leave_one_out = n_splits == len(self.targets.data)
         if leave_one_out and self._search.strategy == "halving" and self._feature_search is None:
             raise ValueError("halving search needs k_folds or train_test_split, not leave-one-out")
@@ -501,7 +564,7 @@ class BaseML(ABC):
         seed = self._shared_seed(shuffle, self.random_state)
         # Folds are computed once here, so every model is scored on identical folds.
         with stage("Compute folds", operation=f"assign every row to one of {n_splits} folds", n_splits=n_splits):
-            folds = self._share(self._fold_ids(n_splits, shuffle, seed, y.array), "folds")
+            folds = self._share(self._fold_ids(n_splits, shuffle, seed, y.array, groups), "folds")
         validation = ValidationType.leave_one_out if leave_one_out else ValidationType.k_folds
         preprocessing = self.features.preprocessing
         round_number = count(1)
@@ -510,7 +573,8 @@ class BaseML(ABC):
             round_folds = folds
             if rows is not None:  # halving round: fold ids for these rows only, -1 = row not used
                 ids = np.full(len(y.array), -1, dtype=np.int64)
-                ids[rows] = self._fold_ids(n_splits, shuffle, seed, y.array[rows])
+                ids[rows] = self._fold_ids(n_splits, shuffle, seed, y.array[rows],
+                                           None if groups is None else groups[rows])
                 round_folds = self._share(ids, f"folds{next(round_number)}")
             tasks = [KFoldsTrainData.set_from_train_data(self._task(c, i, X, y, preprocessing),
                                                          number_of_folds=n_splits, shuffle=shuffle,
@@ -524,22 +588,40 @@ class BaseML(ABC):
         return self._results
 
     def leave_one_out(self):
+        if self._groups is not None:
+            raise ValueError("set() got groups: use leave_one_group_out(), which keeps each group together")
         return self.k_folds(n_splits=len(self.targets.data))
+
+    def leave_one_group_out(self):
+        """k_folds with one fold per group: each group is tested by models trained on all the others.
+        Needs groups in set()."""
+        if self._groups is None:
+            raise ValueError("leave_one_group_out needs groups: pass groups= to set()")
+        return self.k_folds(n_splits=self.n_groups, shuffle=False)
 
     # ------------------------------------------------------------------ features
     @tracked("Feature selection", operation="choose feature subsets with a SelectKBest score function")
     def feature_selection(self, algorithm, number_of_features: list[int]):
         """Choose feature subsets with a SelectKBest score function (chi2, f_classif,
-        f_regression, ...). 10% of the rows are used for the selection and then removed,
-        so they never take part in training or testing."""
+        f_regression, ...). 10% of the rows (with groups: of the groups) are used for the selection
+        and then removed, so they never take part in training or testing."""
         rows = np.arange(len(self.targets.data))
-        _, held_out = sk_train_test_split(rows, test_size=0.1, random_state=self.random_state)
+        if self._groups is not None:
+            if self.n_groups < 3:
+                raise ValueError("feature_selection with groups needs at least 3 groups")
+            splitter = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=self.random_state)
+            _, held_out = next(splitter.split(rows, groups=self._groups))
+        else:
+            _, held_out = sk_train_test_split(rows, test_size=0.1, random_state=self.random_state)
         mixed = self.features.mixed
         if mixed:  # score the original columns; the codes / NaN need preparing first
             algorithm = self._mixed_score_function(algorithm)
             raw = self.features.raw_data[held_out]
         features = self.features.pop_index(held_out)
         target = self.targets.pop_index(held_out)
+        if self._groups is not None:  # one group per remaining row, codes 0..n_groups-1
+            self._groups = np.unique(np.delete(self._groups, held_out), return_inverse=True)[1].astype(np.int64)
+            self._group_labels = np.delete(self._group_labels, held_out)
         if mixed:
             features = fill_missing(raw)
         # One scoring pass serves every k; no process pool needed.

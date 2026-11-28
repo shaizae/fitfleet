@@ -76,6 +76,25 @@ with Classification() as run:
     run.k_folds()
 ```
 
+## Groups: rows that belong together
+
+When several rows come from the same patient, user, store or session, testing on rows whose "siblings"
+were trained on gives optimistic scores. Pass `groups=` to `set()` (optional; without it nothing changes)
+and a group is never split between training and testing:
+
+```python
+with Classification() as run:
+    run.set(X, y, models, groups=df["patient_id"])   # a NumPy array or Series, one value per row
+    run.k_folds(5)               # StratifiedGroupKFold (classification), GroupKFold (regression)
+    run.train_test_split(0.8)    # 80% of the groups train, 20% test
+    run.leave_one_group_out()    # one fold per group
+```
+
+- Classification falls back to `GroupKFold`, with a warning, when a class appears in fewer groups than folds.
+- `n_splits` can't be more than the number of groups; `leave_one_out()` is refused (use `leave_one_group_out()`).
+- `run.groups` returns the group of every row (the labels you passed) as a NumPy array, or `None` without groups.
+- Halving rounds and `feature_selection`'s 10% hold-out pick whole groups too.
+
 ## Command line
 
 ```

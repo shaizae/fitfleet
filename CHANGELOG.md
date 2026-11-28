@@ -7,6 +7,10 @@ version is 0.x, a minor release may contain breaking changes, and they are liste
 ## 0.3.0 - unreleased
 
 ### Added
+- Optional groups: `set(..., groups=...)` (a NumPy array or Series, one value per row) keeps every group on one
+  side of each split - `k_folds` uses `StratifiedGroupKFold` (classification, falling back to `GroupKFold`)
+  or `GroupKFold` (regression); `train_test_split`, halving rounds and `feature_selection` pick whole groups;
+  new `leave_one_group_out()`, and `run.groups` returns the group of every row. Without groups nothing changes.
 - HTML reports with the same content as the PDFs, as one self-contained file (plots embedded):
   `save_report(folder, report_format)` on the experiment report, on every result and on `FeatureResearch`,
   with the new `ReportFormat` enum: `ReportFormat.pdf` (default), `.html` or `.dual` (both files, from one
